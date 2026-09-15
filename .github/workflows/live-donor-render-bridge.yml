@@ -1,0 +1,129 @@
+name: live-donor-render-bridge
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  live-donor-render-bridge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned Render Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Checkout pinned Universal Creation donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-universal-creation
+          ref: c5496a17b9580abf870432ed2fed324b86d1fa37
+          path: universal-creation
+
+      - name: Checkout pinned Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: 6639742ec3b909ae697dadb5b5290b94b41354a3
+          path: visual-effect-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render unit tests
+        run: npm --prefix creative-render test
+
+      - name: Execute live creative donor snapshot
+        run: |
+          node creative-render/src/donor_cli.mjs snapshot \
+            --uc-root universal-creation \
+            --vfx-root visual-effect-fabric \
+            --receipt creative-render/build/donor-observation.json \
+            --uc-scene creative-render/build/uc-cube.axmscene \
+            --vfx-state creative-render/build/vfx-state.json \
+            --vfx-html creative-render/build/vfx-state-native.html
+
+      - name: Assert pinned donor evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          const receipt = JSON.parse(await readFile('creative-render/build/donor-observation.json', 'utf8'));
+          if (receipt.universal_creation.hand_count !== 388) throw new Error(`expected 388 UC hands, got ${receipt.universal_creation.hand_count}`);
+          if (receipt.universal_creation.recipe_count !== 395) throw new Error(`expected 395 UC recipes, got ${receipt.universal_creation.recipe_count}`);
+          if (receipt.universal_creation.probe_hand !== 'creative.mesh-primitive.cube') throw new Error('UC cube proof hand drifted');
+          if (receipt.visual_effect_fabric.graph_id !== 'fx.holographic-ai-entity-state-native') throw new Error('VFX graph drifted');
+          if (receipt.visual_effect_fabric.renderer !== 'axm.vfx.state-native-points/v0.1') throw new Error('VFX renderer drifted');
+          if (!(receipt.visual_effect_fabric.point_count > 0)) throw new Error('VFX working set is empty');
+          if (receipt.visual_effect_fabric.canonical_state_retained !== true) throw new Error('VFX canonical-state boundary lost');
+          if (receipt.visual_effect_fabric.derived_gpu_data_rebuildable !== true) throw new Error('VFX derived-working-set boundary lost');
+          console.log('pinned_donor_contracts=PASS');
+          console.log(`uc_scene_sha256=${receipt.outputs.uc_scene.sha256}`);
+          console.log(`vfx_html_sha256=${receipt.outputs.vfx_html.sha256}`);
+          NODE
+
+      - name: Build pinned AXM Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Create renderer-neutral request for UC-produced mesh scene
+        run: |
+          cat > creative-render/build/uc-cube.axmrender <<'EOF'
+          # AXM Creative Render live donor bridge proof.
+          AXM_RENDER_REQUEST 1
+          scene uc-cube.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output uc-cube.ppm
+          EOF
+
+      - name: Render Universal Creation output through AXM native renderer
+        run: |
+          render-fabric/build/axm-render \
+            --request creative-render/build/uc-cube.axmrender \
+            --receipt creative-render/build/uc-cube.axmreceipt
+          render-fabric/build/axm-render-verify-receipt \
+            creative-render/build/uc-cube.axmrender \
+            creative-render/build/uc-cube.axmreceipt
+          test -s creative-render/build/uc-cube.ppm
+          echo "uc_to_render_fabric=PASS"
+          sha256sum creative-render/build/uc-cube.ppm
+
+      - name: Record proof digests
+        run: |
+          sha256sum \
+            creative-render/build/donor-observation.json \
+            creative-render/build/uc-cube.axmscene \
+            creative-render/build/uc-cube.axmrender \
+            creative-render/build/uc-cube.axmreceipt \
+            creative-render/build/uc-cube.ppm \
+            creative-render/build/vfx-state.json \
+            creative-render/build/vfx-state-native.html
+
+      - name: Upload live bridge proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-live-bridge-proof
+          path: |
+            creative-render/build/donor-observation.json
+            creative-render/build/uc-cube.axmscene
+            creative-render/build/uc-cube.axmrender
+            creative-render/build/uc-cube.axmreceipt
+            creative-render/build/uc-cube.ppm
+            creative-render/build/vfx-state.json
+            creative-render/build/vfx-state-native.html
