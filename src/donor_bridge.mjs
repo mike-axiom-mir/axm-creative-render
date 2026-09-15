@@ -39,12 +39,17 @@ function byte(value, label) {
   return value;
 }
 
-export function precisionMeshToAxmScene(mesh, options = {}) {
-  validatePrecisionMesh(mesh);
+function meshScale(options) {
   const scale = options.scale ?? 0.62;
   if (!Number.isFinite(scale) || scale <= 0 || scale > 16) {
-    throw new Error("scene adapter scale must be finite and in (0,16]");
+    throw new Error("adapter scale must be finite and in (0,16]");
   }
+  return scale;
+}
+
+export function precisionMeshToAxmScene(mesh, options = {}) {
+  validatePrecisionMesh(mesh);
+  const scale = meshScale(options);
   const albedo = options.albedo ?? [94, 196, 255];
   if (!Array.isArray(albedo) || albedo.length !== 3) throw new Error("albedo must be RGB");
   const rgb = albedo.map((value, i) => byte(value, `albedo[${i}]`));
@@ -64,6 +69,74 @@ export function precisionMeshToAxmScene(mesh, options = {}) {
   }
 
   return { version: 1, triangles };
+}
+
+export function precisionMeshToHolographicForm(mesh, options = {}) {
+  const info = validatePrecisionMesh(mesh);
+  const scale = meshScale(options);
+  const maxTriangles = Math.round(options.maxTriangles ?? 128);
+  const samplesPerTriangle = Math.round(options.samplesPerTriangle ?? 24);
+  const pointSize = Number(options.pointSize ?? 1.8);
+  if (!Number.isInteger(maxTriangles) || maxTriangles < 1 || maxTriangles > 128) {
+    throw new Error("maxTriangles must be an integer in 1..128");
+  }
+  if (!Number.isInteger(samplesPerTriangle) || samplesPerTriangle < 16 || samplesPerTriangle > 96) {
+    throw new Error("samplesPerTriangle must be an integer in 16..96");
+  }
+  if (!Number.isFinite(pointSize) || pointSize < 0.25 || pointSize > 8) {
+    throw new Error("pointSize must be finite in [0.25,8]");
+  }
+
+  const triangleCount = Math.min(info.triangleCount, maxTriangles);
+  const primitives = [];
+  for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+    const points = [];
+    for (let corner = 0; corner < 3; corner += 1) {
+      const meshIndex = mesh.indices[triangle * 3 + corner] * 3;
+      points.push([
+        mesh.positions[meshIndex] * scale,
+        mesh.positions[meshIndex + 1] * scale,
+        mesh.positions[meshIndex + 2] * scale,
+      ]);
+    }
+    primitives.push({
+      type: "polyline",
+      points: [...points, points[0]],
+      samples: samplesPerTriangle,
+      size: pointSize,
+      role: triangle % 4,
+    });
+  }
+
+  const vertexLimit = Math.min(info.vertexCount, 512);
+  const vertexCells = [];
+  for (let vertex = 0; vertex < vertexLimit; vertex += 1) {
+    const offset = vertex * 3;
+    vertexCells.push([
+      mesh.positions[offset] * scale,
+      mesh.positions[offset + 1] * scale,
+      mesh.positions[offset + 2] * scale,
+      pointSize * 1.35,
+      5,
+      vertexLimit === 1 ? 0 : vertex / (vertexLimit - 1),
+      1,
+    ]);
+  }
+  primitives.push({ type: "points", points: vertexCells });
+
+  return {
+    id: String(options.id ?? "creative-render-mesh-hologram"),
+    style: { pattern: "none", amount: 0, scale: 7 },
+    primitives,
+    source: {
+      schema: "axm.creative-render.mesh-hologram-source/v1",
+      original_vertex_count: info.vertexCount,
+      original_triangle_count: info.triangleCount,
+      projected_triangle_count: triangleCount,
+      projected_vertex_count: vertexLimit,
+      bounded: triangleCount < info.triangleCount || vertexLimit < info.vertexCount,
+    },
+  };
 }
 
 async function fileDigest(path) {
@@ -92,7 +165,7 @@ export async function observeUniversalCreation(root) {
   const flowRequest = {
     mode: "execute",
     goal: "build a renderable shaped cube through explicit deterministic creative hands",
-    state: { bridge: "axm-creative-render-v0.2" },
+    state: { bridge: "axm-creative-render-v0.3" },
     steps: [
       {
         id: "make",
@@ -132,11 +205,13 @@ export async function observeUniversalCreation(root) {
   const bounds = requireObject(flowResult.final_state?.bounds, "Creative Flow bounds");
   const meshInfo = validatePrecisionMesh(mesh);
   const sceneBytes = Buffer.from(serializeScene(precisionMeshToAxmScene(mesh)), "utf8");
+  const holographicForm = precisionMeshToHolographicForm(mesh, { id: "creative-render-live-donor-cube-hologram" });
 
   return {
     sceneBytes,
+    holographicForm,
     observation: {
-      schema: "axm.creative-render.uc-donor-observation/v1",
+      schema: "axm.creative-render.uc-donor-observation/v2",
       donor: "axm-universal-creation",
       entry_sha256: entry.sha256,
       creative_hands_version: String(hands.version ?? "unknown"),
@@ -158,14 +233,17 @@ export async function observeUniversalCreation(root) {
       adapted_scene_sha256: sha256(sceneBytes),
       adapter_coordinate_scale: 0.62,
       adapter_albedo_rgb: [94, 196, 255],
+      holographic_form_id: holographicForm.id,
+      holographic_primitive_count: holographicForm.primitives.length,
+      holographic_projection_bounded: holographicForm.source.bounded,
     },
   };
 }
 
-export async function observeVisualEffectFabric(root) {
+export async function observeVisualEffectFabric(root, options = {}) {
   const rootPath = resolve(root);
   const runtimePath = resolve(rootPath, "hand-lab/src/hand-runtime.mjs");
-  const effectPath = resolve(rootPath, "hand-lab/src/holographic-ai-state-native.mjs");
+  const effectPath = resolve(rootPath, "hand-lab/src/holographic-state-projector.mjs");
   const [runtimeSource, effectSource] = await Promise.all([fileDigest(runtimePath), fileDigest(effectPath)]);
 
   const runtime = await import(`${pathToFileURL(runtimePath).href}?sha=${runtimeSource.sha256}`);
@@ -173,26 +251,32 @@ export async function observeVisualEffectFabric(root) {
   if (typeof runtime.createHandRegistry !== "function" || typeof runtime.executeHandGraph !== "function") {
     throw new Error("Visual Effect Fabric donor does not expose the expected Hand runtime");
   }
-  if (!Array.isArray(effect.HOLOGRAPHIC_AI_STATE_NATIVE_HANDS) || !effect.HOLOGRAPHIC_AI_STATE_NATIVE_GRAPH || typeof effect.makeHolographicAiInitialState !== "function") {
-    throw new Error("Visual Effect Fabric donor does not expose the state-native holographic AI graph");
+  if (!Array.isArray(effect.HOLOGRAPHIC_STATE_PROJECTOR_HANDS) || !effect.HOLOGRAPHIC_STATE_PROJECTOR_GRAPH || typeof effect.makeHolographicFormState !== "function") {
+    throw new Error("Visual Effect Fabric donor does not expose the generic holographic state projector");
   }
 
-  const registry = runtime.createHandRegistry(effect.HOLOGRAPHIC_AI_STATE_NATIVE_HANDS);
+  const form = options.form ?? effect.makeGlobeForm?.();
+  if (!form) throw new Error("generic holographic projector observation requires a form");
+  const registry = runtime.createHandRegistry(effect.HOLOGRAPHIC_STATE_PROJECTOR_HANDS);
   const run = runtime.executeHandGraph({
     registry,
-    graph: effect.HOLOGRAPHIC_AI_STATE_NATIVE_GRAPH,
-    initialState: effect.makeHolographicAiInitialState(),
+    graph: effect.HOLOGRAPHIC_STATE_PROJECTOR_GRAPH,
+    initialState: effect.makeHolographicFormState(form, options.seed ?? 20260915),
     context: { callerKind: "axm-creative-render" },
   });
   const finalState = requireObject(run.finalState, "VFX final state");
-  const realization = finalState.realizations?.holographicAiStateNative;
-  requireObject(realization, "state-native holographic AI realization");
+  const realization = finalState.realizations?.holographicStateProjector;
+  requireObject(realization, "generic holographic state projector realization");
   if (typeof realization.content !== "string" || !realization.content.includes("<canvas")) {
-    throw new Error("state-native holographic AI realization did not produce HTML canvas content");
+    throw new Error("generic holographic state projector did not produce HTML canvas content");
   }
-  const workingSet = requireObject(realization.workingSet, "state-native working set");
-  if (workingSet.canonicalStateRetained !== true || workingSet.derivedGpuDataRebuildable !== true) {
-    throw new Error("state-native donor lost its canonical/derived working-set boundary");
+  const workingSet = requireObject(realization.workingSet, "generic holographic working set");
+  if (
+    workingSet.canonicalFormRetained !== true ||
+    workingSet.derivedSampleFieldEditable !== true ||
+    workingSet.derivedGpuDataRebuildable !== true
+  ) {
+    throw new Error("generic holographic donor lost its canonical/editable/derived working-set boundary");
   }
 
   const htmlBytes = Buffer.from(realization.content, "utf8");
@@ -202,24 +286,30 @@ export async function observeVisualEffectFabric(root) {
     htmlBytes,
     stateBytes,
     observation: {
-      schema: "axm.creative-render.vfx-donor-observation/v1",
+      schema: "axm.creative-render.vfx-donor-observation/v2",
       donor: "axm-visual-effect-fabric",
       runtime_sha256: runtimeSource.sha256,
       effect_module_sha256: effectSource.sha256,
-      graph_id: run.graph?.id ?? effect.HOLOGRAPHIC_AI_STATE_NATIVE_GRAPH.id,
-      graph_version: run.graph?.version ?? effect.HOLOGRAPHIC_AI_STATE_NATIVE_GRAPH.version,
-      graph_stage_count: effect.HOLOGRAPHIC_AI_STATE_NATIVE_GRAPH.stages.length,
+      graph_id: run.graph?.id ?? effect.HOLOGRAPHIC_STATE_PROJECTOR_GRAPH.id,
+      graph_version: run.graph?.version ?? effect.HOLOGRAPHIC_STATE_PROJECTOR_GRAPH.version,
+      graph_stage_count: effect.HOLOGRAPHIC_STATE_PROJECTOR_GRAPH.stages.length,
       executed_stage_count: run.executedStageIds?.length ?? null,
       final_state_hash: run.finalStateHash,
+      form_id: finalState.form?.id ?? null,
+      canonical_form_hash: realization.canonicalFormHash,
+      sample_field_hash: realization.sampleFieldHash,
       renderer: realization.renderer,
       derived_from_state_hash: realization.derivedFromStateHash,
-      working_set_hash: workingSet.workingSetHash,
+      working_set_hash: workingSet.sampleFieldHash,
       point_count: workingSet.pointCount,
       modeled_buffer_bytes: workingSet.modeledBufferBytes,
-      canonical_state_retained: workingSet.canonicalStateRetained,
+      canonical_form_retained: workingSet.canonicalFormRetained,
+      derived_sample_field_editable: workingSet.derivedSampleFieldEditable,
       derived_gpu_data_rebuildable: workingSet.derivedGpuDataRebuildable,
-      body_buffer_build_policy: workingSet.bodyBufferBuildPolicy,
-      behavior_delta_policy: workingSet.behaviorDeltaPolicy,
+      field_buffer_build_policy: workingSet.fieldBufferBuildPolicy,
+      canonical_state_retained: workingSet.canonicalFormRetained,
+      body_buffer_build_policy: workingSet.fieldBufferBuildPolicy,
+      behavior_delta_policy: null,
       html_sha256: sha256(htmlBytes),
       state_sha256: sha256(stateBytes),
     },
