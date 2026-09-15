@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildTemporalMotionRequest, analyzeAndFinishTemporalPpms } from "../src/temporal_motion_bridge.mjs";
+import { buildTemporalMotionRequest, chooseTrackingRegion, analyzeAndFinishTemporalPpms } from "../src/temporal_motion_bridge.mjs";
 import { serializePpmRgb8 } from "../src/post_render_bridge.mjs";
 
 function raster(id, width = 320, height = 180) {
@@ -15,6 +15,19 @@ function raster(id, width = 320, height = 180) {
     source_digest: `source-${id}`,
     digest: `digest-${id}`,
   };
+}
+
+function contrastFrame(width = 64, height = 48) {
+  const rgb = Buffer.alloc(width * height * 3);
+  for (let y = 14; y < 34; y += 1) {
+    for (let x = 28; x < 44; x += 1) {
+      const i = (y * width + x) * 3;
+      rgb[i] = 230;
+      rgb[i + 1] = 180;
+      rgb[i + 2] = 80;
+    }
+  }
+  return serializePpmRgb8(width, height, rgb);
 }
 
 test("temporal motion request tracks against frame zero then stabilizes, differences and trails", () => {
@@ -42,6 +55,22 @@ test("temporal motion request tracks against frame zero then stabilizes, differe
   assert.equal(request.policy.trailWindow, 3);
   assert.equal(request.policy.decay, 0.5);
   assert(request.policy.work <= 32_000_000);
+});
+
+test("tracking-region selection deterministically chooses spatial edge evidence", () => {
+  const first = chooseTrackingRegion(contrastFrame(), 4);
+  const second = chooseTrackingRegion(contrastFrame(), 4);
+  assert.deepEqual(first, second);
+  assert.equal(first.selection.method, "max-local-rgb-edge-energy/v1");
+  assert(first.selection.score > 0);
+  assert(first.selection.candidate_count > 1);
+  assert(first.region.x < 44 && first.region.x + first.region.width > 28);
+  assert(first.region.y < 34 && first.region.y + first.region.height > 14);
+});
+
+test("tracking-region selection refuses a featureless reference frame", () => {
+  const flat = serializePpmRgb8(64, 48, Buffer.alloc(64 * 48 * 3, 40));
+  assert.throws(() => chooseTrackingRegion(flat, 4), /no spatially distinctive tracking region/);
 });
 
 test("temporal motion request fails closed on tracking work overflow", () => {
