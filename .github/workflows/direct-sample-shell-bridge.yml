@@ -1,0 +1,187 @@
+name: direct-sample-shell-bridge
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: direct-sample-shell-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-direct-sample-shell:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned Universal Creation donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-universal-creation
+          ref: c89839485a6d09a3e70dbd633c5f1292348f37b1
+          path: universal-creation
+
+      - name: Checkout pinned Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: bed7e20374e27b8a6edc1772c606232b196a5869
+          path: visual-effect-fabric
+
+      - name: Checkout pinned Render Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Compose current VFX shell Hands around direct sample state
+        run: |
+          mkdir -p creative-render/build/direct-sample-shell
+          node creative-render/src/direct_sample_shell_cli.mjs build \
+            --uc-root universal-creation \
+            --vfx-root visual-effect-fabric \
+            --scene creative-render/build/direct-sample-shell/source.axmscene \
+            --state creative-render/build/direct-sample-shell/shell-state.json \
+            --html creative-render/build/direct-sample-shell/shell.html \
+            --receipt creative-render/build/direct-sample-shell/shell.receipt.json
+
+      - name: Assert shell evidence and authority boundaries
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+          const base = 'creative-render/build/direct-sample-shell/';
+          const [receiptBytes, sceneBytes, stateBytes, htmlBytes] = await Promise.all([
+            readFile(base+'shell.receipt.json'),
+            readFile(base+'source.axmscene'),
+            readFile(base+'shell-state.json'),
+            readFile(base+'shell.html'),
+          ]);
+          const receipt = JSON.parse(receiptBytes.toString('utf8'));
+          if (receipt.contract !== 'AXM_CREATIVE_DIRECT_SAMPLE_SHELL_RECEIPT' || receipt.version !== 1) throw new Error('shell receipt drifted');
+          if (receipt.universal_creation.hand_count !== 501 || receipt.universal_creation.recipe_count !== 508) throw new Error('UC public creative census drifted');
+          if (receipt.outputs.scene.sha256 !== sha(sceneBytes)) throw new Error('source scene bytes not bound');
+          if (receipt.outputs.shell_state.sha256 !== sha(stateBytes)) throw new Error('shell state bytes not bound');
+          if (receipt.outputs.shell_html.sha256 !== sha(htmlBytes)) throw new Error('shell HTML bytes not bound');
+          if (receipt.adapter.source_triangle_count !== 12 || receipt.adapter.projected_triangle_count !== 12) throw new Error('pinned scene triangle evidence drifted');
+          if (receipt.adapter.point_count !== 324 || receipt.visual_effect_fabric.point_count !== 324) throw new Error('shell point-count continuity drifted');
+          if (receipt.visual_effect_fabric.graph_owner !== 'axm-creative-render-caller-composition') throw new Error('caller graph ownership boundary drifted');
+          if (receipt.visual_effect_fabric.graph_id !== 'axm.creative-render.direct-sample-shell') throw new Error('shell caller graph id drifted');
+          const expectedHands = [
+            'fx.hologram.sample-field-admit',
+            'fx.hologram.creative-field',
+            'fx.hologram.visibility-fit',
+            'fx.hologram.shell-projection-state',
+            'fx.hologram.state-projector-shell-webgl',
+          ];
+          if (JSON.stringify(receipt.visual_effect_fabric.donor_hand_ids) !== JSON.stringify(expectedHands)) throw new Error('donor shell Hand set drifted');
+          if (receipt.visual_effect_fabric.renderer !== 'axm.vfx.holographic-state-shell/v0.4') throw new Error('shell renderer drifted');
+          if (receipt.visual_effect_fabric.source_kind !== 'AXM_SCENE 1') throw new Error('shell source kind drifted');
+          if (receipt.visual_effect_fabric.source_digest !== receipt.outputs.scene.sha256) throw new Error('shell lost source digest');
+          if (receipt.visual_effect_fabric.canonical_source_hash !== receipt.outputs.scene.sha256) throw new Error('shell canonical source hash drifted');
+          if (receipt.visual_effect_fabric.source_identity_retained !== true || receipt.visual_effect_fabric.sample_field_remains_explicit !== true) throw new Error('shell source/derived boundary drifted');
+          if (receipt.visual_effect_fabric.repeat_verification !== 'PASS') throw new Error('shell repeat verification failed');
+          if (receipt.visual_effect_fabric.visibility.mobile_legibility !== true || receipt.visual_effect_fabric.visibility.two_pass_glow !== true) throw new Error('visibility evidence drifted');
+          const language = receipt.visual_effect_fabric.visual_language;
+          if (language.primary !== 'translucent-shell' || language.secondary !== 'volumetric-glow' || language.tertiary !== 'sparse-signal-noise' || language.brightSweep !== false) throw new Error('shell visual-language contract drifted');
+          if (receipt.visual_effect_fabric.truth_boundary.donor_graph_reused !== false || receipt.visual_effect_fabric.truth_boundary.donor_hands_reused !== true) throw new Error('shell graph authority truth boundary drifted');
+          console.log('direct_sample_shell_evidence=PASS');
+          console.log(`scene_sha256=${receipt.outputs.scene.sha256}`);
+          console.log(`point_count=${receipt.adapter.point_count}`);
+          console.log(`vfx_final_state_hash=${receipt.visual_effect_fabric.final_state_hash}`);
+          console.log(`shell_html_sha256=${receipt.outputs.shell_html.sha256}`);
+          NODE
+
+      - name: Build and test pinned Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Re-render the exact same source scene through native Render Fabric
+        run: |
+          cat > creative-render/build/direct-sample-shell/source.axmrender <<'EOF'
+          # AXM Creative Render v0.12 direct-sample shell/native-render continuity proof.
+          AXM_RENDER_REQUEST 1
+          scene source.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output source.ppm
+          EOF
+          render-fabric/build/axm-render \
+            --request creative-render/build/direct-sample-shell/source.axmrender \
+            --receipt creative-render/build/direct-sample-shell/source.axmreceipt
+          render-fabric/build/axm-render-verify-receipt \
+            creative-render/build/direct-sample-shell/source.axmrender \
+            creative-render/build/direct-sample-shell/source.axmreceipt
+          test -s creative-render/build/direct-sample-shell/source.ppm
+
+      - name: Bind shell and native render to one source identity
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+          const base = 'creative-render/build/direct-sample-shell/';
+          const [receiptBytes, scene, shellState, shellHtml, request, renderReceipt, frame] = await Promise.all([
+            readFile(base+'shell.receipt.json'), readFile(base+'source.axmscene'), readFile(base+'shell-state.json'),
+            readFile(base+'shell.html'), readFile(base+'source.axmrender'), readFile(base+'source.axmreceipt'), readFile(base+'source.ppm'),
+          ]);
+          const shell = JSON.parse(receiptBytes.toString('utf8'));
+          const sceneSha = sha(scene);
+          if (shell.outputs.scene.sha256 !== sceneSha || shell.visual_effect_fabric.source_digest !== sceneSha) throw new Error('one-source continuity failed');
+          const evidence = {
+            contract: 'AXM_CREATIVE_DIRECT_SAMPLE_SHELL_RENDER_EVIDENCE',
+            version: 1,
+            source_scene_sha256: sceneSha,
+            shell_receipt_sha256: sha(receiptBytes),
+            shell_state_sha256: sha(shellState),
+            shell_html_sha256: sha(shellHtml),
+            render_request_sha256: sha(request),
+            render_receipt_sha256: sha(renderReceipt),
+            render_frame_sha256: sha(frame),
+            render_receipt_replay: 'PASS-executed-before-binding',
+            shell_renderer: shell.visual_effect_fabric.renderer,
+            native_renderer: 'axm.native.cpu.reference',
+            authority: {
+              source_scene: 'AXM_SCENE_1_CALLER_STATE',
+              shell_sample_state: 'DERIVED_VFX_PROJECTION_STATE',
+              shell_html: 'DERIVED_VFX_REALIZATION',
+              render_pixels: 'DERIVED_RENDER_FABRIC_OUTPUT',
+            },
+            truth_boundary: {
+              proves: 'one exact AXM scene identity independently feeds the current donor shell Hands and the receipt-verified native renderer',
+              does_not_prove: 'visual equivalence, surface reconstruction, material preservation in the shell, physical holography, visual quality or cross-machine determinism',
+            },
+          };
+          await writeFile(base+'shell-render-evidence.json', JSON.stringify(evidence, null, 2)+'\n');
+          console.log('direct_sample_shell_render_binding=PASS');
+          console.log(`scene_sha256=${sceneSha}`);
+          console.log(`shell_html_sha256=${evidence.shell_html_sha256}`);
+          console.log(`render_frame_sha256=${evidence.render_frame_sha256}`);
+          NODE
+
+      - name: Upload complete direct-sample shell proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-direct-sample-shell-proof
+          path: creative-render/build/direct-sample-shell/
