@@ -14,7 +14,8 @@
 - The temporal CLI emits renderer-neutral `AXM_RENDER_REQUEST 1` files next to each sampled `AXM_SCENE 1` body instead of silently invoking a renderer inside the state sampler.
 - The post-render bridge can parse bounded P6 RGB8 PPM, construct explicit `axm.precision-raster/v1` state with opaque alpha, and export precision-raster state back to PPM.
 - The post-render bridge repeat-checks the same Creative Flow result before accepting output and refuses to overwrite the renderer source frame.
-- The VFX source bridge can execute a donor electric Hand graph twice and require matching final-state/SVG evidence before accepting the derived SVG.
+- The VFX source bridge can execute a donor electric Hand graph twice and require matching final-state/SVG evidence before accepting the source proof.
+- The bounded electric-path raster adapter consumes canonical VFX path points/energy/width directly, has explicit path/point/pixel budgets, and repeat-checks byte-identical PPM output in the exercised runtime.
 - The VFX frame-composite bridge requires base/effect raster dimensions to match and repeat-checks the same Universal Creation screen-composite flow before accepting output.
 
 ## Verified only when the v0.2 live integration workflow is green
@@ -74,15 +75,22 @@ A passing run establishes only these additional facts:
 - the pinned Visual Effect Fabric donor can execute the real `fx.electric-storm` Hand graph through its own runtime;
 - the same explicit seed repeats to the same final-state hash and derived SVG bytes in the exercised environment;
 - canonical electric paths remain separate from the derived SVG realization;
-- an explicitly resolved ImageMagick executable can rasterize that SVG to a 320x180 RGB8 PPM in the exercised runner, with executable path, executable SHA-256 and version text retained as evidence;
+- the exact canonical electric state can be materialized by the bounded `axm.creative-render.electric-path-raster/v1` adapter into a 320x180 RGB8 PPM, and repeating that materialization produces identical PPM bytes in the exercised runtime;
+- the state-raster receipt records which canonical fields are realized (`paths.points`, `paths.energy`, `paths.width`) and which richer layer/motion semantics remain retained but unrealized;
 - the source Render Fabric frame is independently receipt-verified before compositing;
 - the effect PPM and Render Fabric PPM can be adapted into Universal Creation precision-raster state at matching dimensions;
 - Universal Creation Creative Flow executes real `creative.composite.screen` and `creative.adjust.contrast` Hands over those two raster states;
 - running that same composite flow twice produces identical flow/output-raster/PPM evidence in the exercised environment;
 - the final composited PPM differs from the base Render Fabric frame;
-- `AXM_CREATIVE_VFX_COMPOSITE_RECEIPT 1` binds the exact Render Fabric request/receipt/frame, VFX source receipt/SVG, effect raster, rasterizer evidence, UC flow evidence and final PPM.
+- `AXM_CREATIVE_VFX_COMPOSITE_RECEIPT 1` binds the exact Render Fabric request/receipt/frame, VFX source receipt/SVG, VFX state-raster receipt/effect raster, UC flow evidence and final PPM.
 
-This proves an **explicit VFX source -> realization -> post-render composite path**. It does not prove that the VFX graph runs natively inside Render Fabric.
+This proves an **explicit VFX canonical state -> bounded raster realization -> post-render composite path**. It does not prove that the VFX graph runs natively inside Render Fabric or that every donor layer semantic was realized.
+
+## Failed-first-run correction
+
+The first v0.5 PR-head integration run passed all 18 Creative Render tests, all 33 Render Fabric tests, source rendering/receipt replay and the real `fx.electric-storm` graph, then failed at the attempted ImageMagick SVG-rasterization step before a VFX raster was accepted.
+
+The failure did not produce evidence sufficient to name a precise external-tool cause. Rather than weaken the gate, invent a cause, or install a hidden dependency, the path was changed to the bounded canonical-state raster adapter described above. The failed workflow run remains in PR history.
 
 ## Not yet claimed
 
@@ -94,9 +102,9 @@ This proves an **explicit VFX source -> realization -> post-render composite pat
 - Native Visual Effect Fabric injection into AXM Render Fabric.
 - A shared versioned renderer-internal render-pass/effect-pass contract.
 - GPU/WebGPU post-process shader integration.
+- Full realization of Visual Effect Fabric AetherFX layer-module semantics in the bounded path adapter.
 - Physical scene-lighting interaction from the composited electric effect.
 - Alpha-preserving post-render interchange through the current PPM proof.
-- ImageMagick SVG raster determinism across machines or attestation of all loaded delegates/libraries.
 - Automatic aesthetic choice or artistic-quality acceptance for post-render/VFX Hands.
 - Video/animation integration with FrameState.
 - Professional Body execution or professional/aesthetic acceptance.
