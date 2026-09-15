@@ -70,21 +70,22 @@ jobs:
             --receipt creative-render/build/vfx-frame/electric.receipt.json \
             --seed 20260915
 
-      - name: Rasterize derived VFX SVG with evidenced ImageMagick boundary
+      - name: Materialize canonical electric path state into a bounded effect raster
         run: |
-          set -euo pipefail
-          converter="$(readlink -f "$(command -v convert)")"
-          {
-            echo "executable=$converter"
-            sha256sum "$converter"
-            "$converter" -version
-          } > creative-render/build/vfx-frame/rasterizer-evidence.txt
-          "$converter" creative-render/build/vfx-frame/electric.svg \
-            -resize '320x180!' -depth 8 -colorspace sRGB \
-            ppm:creative-render/build/vfx-frame/electric.ppm
+          node creative-render/src/vfx_rasterize_cli.mjs rasterize \
+            --state creative-render/build/vfx-frame/electric-state.json \
+            --vfx-receipt creative-render/build/vfx-frame/electric.receipt.json \
+            --out creative-render/build/vfx-frame/electric.ppm \
+            --receipt creative-render/build/vfx-frame/electric-raster.receipt.json \
+            --width 320 \
+            --height 180
           node --input-type=module <<'NODE'
           import { readFile } from 'node:fs/promises';
           import { parsePpmRgb8 } from './creative-render/src/post_render_bridge.mjs';
+          const receipt = JSON.parse(await readFile('creative-render/build/vfx-frame/electric-raster.receipt.json','utf8'));
+          if (receipt.contract !== 'AXM_CREATIVE_VFX_RASTER_RECEIPT' || receipt.version !== 1) throw new Error('VFX raster receipt contract drifted');
+          if (receipt.adapter?.schema !== 'axm.creative-render.electric-path-raster/v1') throw new Error('unexpected VFX raster adapter');
+          if (receipt.repeat_verification !== 'PASS') throw new Error('VFX raster repeat verification failed');
           const effect = parsePpmRgb8(await readFile('creative-render/build/vfx-frame/electric.ppm'));
           if (effect.width !== 320 || effect.height !== 180) throw new Error(`unexpected VFX raster dimensions ${effect.width}x${effect.height}`);
           console.log('vfx_raster=PASS');
@@ -102,7 +103,7 @@ jobs:
             --render-receipt creative-render/build/vfx-frame/source.axmreceipt \
             --vfx-receipt creative-render/build/vfx-frame/electric.receipt.json \
             --vfx-svg creative-render/build/vfx-frame/electric.svg \
-            --rasterizer-evidence creative-render/build/vfx-frame/rasterizer-evidence.txt
+            --vfx-raster-receipt creative-render/build/vfx-frame/electric-raster.receipt.json
 
       - name: Assert full VFX-to-frame evidence
         run: |
@@ -112,6 +113,7 @@ jobs:
           const receipt = JSON.parse(await readFile('creative-render/build/vfx-frame/composite.receipt.json', 'utf8'));
           if (receipt.contract !== 'AXM_CREATIVE_VFX_COMPOSITE_RECEIPT' || receipt.version !== 1) throw new Error('VFX composite receipt contract drifted');
           if (receipt.vfx_source.graph_id !== 'fx.electric-storm') throw new Error(`unexpected VFX graph ${receipt.vfx_source.graph_id}`);
+          if (receipt.vfx_source.raster_adapter_schema !== 'axm.creative-render.electric-path-raster/v1') throw new Error(`unexpected VFX raster adapter ${receipt.vfx_source.raster_adapter_schema}`);
           if (receipt.universal_creation.hand_count !== 441 || receipt.universal_creation.recipe_count !== 448) throw new Error('UC public creative census drifted');
           const expected = ['creative.composite.screen','creative.adjust.contrast'];
           if (JSON.stringify(receipt.universal_creation.operation_ids) !== JSON.stringify(expected)) throw new Error(`composite operations drifted: ${JSON.stringify(receipt.universal_creation.operation_ids)}`);
