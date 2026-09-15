@@ -1,6 +1,6 @@
 {
   "name": "axm-creative-render",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "description": "Experimental creative operators and explicit donor bridges over renderer-consumable canonical state.",
@@ -15,7 +15,8 @@
     "vfx-composite": "node src/vfx_composite_cli.mjs composite",
     "framestate-project": "node src/framestate_bridge_cli.mjs build",
     "framestate-video-verify": "node src/framestate_video_verify.mjs",
-    "temporal-finish": "node src/temporal_finish_cli.mjs apply"
+    "temporal-finish": "node src/temporal_finish_cli.mjs apply",
+    "temporal-motion": "node src/temporal_motion_cli.mjs apply"
   },
   "engines": {
     "node": ">=20"
