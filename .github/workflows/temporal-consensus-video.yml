@@ -1,0 +1,290 @@
+name: temporal-consensus-video
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: temporal-consensus-video-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-temporal-consensus-video:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned Universal Creation donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-universal-creation
+          ref: 026f4f5d0e669627639f404945147c9dedb48ff2
+          path: universal-creation
+
+      - name: Checkout pinned Render Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Checkout pinned FrameState donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-framestate
+          ref: 41c9c6827e64613b523b28536ab864dddf046d93
+          path: framestate
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Use Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install explicit FFmpeg assembly boundary
+        run: |
+          set -euo pipefail
+          mkdir -p creative-render/build
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          {
+            echo "resolved_executable=$(readlink -f "$(command -v ffmpeg)")"
+            echo "package_version=$(dpkg-query -W -f='${Version}' ffmpeg)"
+            ffmpeg -version | head -n 1
+          } | tee creative-render/build/temporal-consensus-ffmpeg-environment.txt
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Sample close Universal Creation animation states
+        run: |
+          node creative-render/src/temporal_cli.mjs sample \
+            --uc-root universal-creation \
+            --out-dir creative-render/build/temporal-consensus-source \
+            --receipt creative-render/build/temporal-consensus-source/temporal.receipt.json \
+            --times 0,0.25,0.5
+
+      - name: Build and test Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and verify source 000
+        run: |
+          render-fabric/build/axm-render --request creative-render/build/temporal-consensus-source/frame-000.axmrender --receipt creative-render/build/temporal-consensus-source/frame-000.axmreceipt
+          render-fabric/build/axm-render-verify-receipt creative-render/build/temporal-consensus-source/frame-000.axmrender creative-render/build/temporal-consensus-source/frame-000.axmreceipt
+
+      - name: Render and verify source 001
+        run: |
+          render-fabric/build/axm-render --request creative-render/build/temporal-consensus-source/frame-001.axmrender --receipt creative-render/build/temporal-consensus-source/frame-001.axmreceipt
+          render-fabric/build/axm-render-verify-receipt creative-render/build/temporal-consensus-source/frame-001.axmrender creative-render/build/temporal-consensus-source/frame-001.axmreceipt
+
+      - name: Render and verify source 002
+        run: |
+          render-fabric/build/axm-render --request creative-render/build/temporal-consensus-source/frame-002.axmrender --receipt creative-render/build/temporal-consensus-source/frame-002.axmreceipt
+          render-fabric/build/axm-render-verify-receipt creative-render/build/temporal-consensus-source/frame-002.axmrender creative-render/build/temporal-consensus-source/frame-002.axmreceipt
+
+      - name: Build known image-translation control through Universal Creation Creative Flow
+        run: |
+          node creative-render/src/temporal_translation_control_cli.mjs build \
+            --uc-root universal-creation \
+            --source creative-render/build/temporal-consensus-source/frame-000.ppm \
+            --out-dir creative-render/build/temporal-translation-control \
+            --receipt creative-render/build/temporal-translation-control.receipt.json \
+            --offsets 0:0,4:2,8:5
+
+      - name: Assert translation control provenance
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          const r = JSON.parse(await readFile('creative-render/build/temporal-translation-control.receipt.json','utf8'));
+          if (r.contract !== 'AXM_CREATIVE_TRANSLATION_CONTROL_RECEIPT' || r.version !== 1) throw new Error('translation-control contract drifted');
+          if (r.observation.hand_count !== 501 || r.observation.recipe_count !== 508) throw new Error('pinned UC census drifted in control generator');
+          if (r.observation.overlay_hand_id !== 'creative.frame-finish.overlay-at') throw new Error('control did not use UC overlay-at Hand');
+          if (r.observation.repeat_verification !== 'PASS') throw new Error('translation-control repeat gate failed');
+          const expected = [[0,0],[4,2],[8,5]];
+          r.outputs.forEach((row,index) => {
+            if (row.expected_offset.dx !== expected[index][0] || row.expected_offset.dy !== expected[index][1]) throw new Error('translation-control offsets drifted');
+          });
+          console.log('translation_control_provenance=PASS');
+          NODE
+
+      - name: Run multi-region Universal Creation tracking consensus on known controls
+        run: |
+          node creative-render/src/temporal_consensus_cli.mjs apply \
+            --uc-root universal-creation \
+            --frames creative-render/build/temporal-translation-control/frame-000.ppm,creative-render/build/temporal-translation-control/frame-001.ppm,creative-render/build/temporal-translation-control/frame-002.ppm \
+            --out-dir creative-render/build/temporal-consensus \
+            --receipt creative-render/build/temporal-consensus.receipt.json \
+            --regions 3 \
+            --search-radius 16 \
+            --max-axis-spread 4 \
+            --trail-window 3 \
+            --decay 0.65
+
+      - name: Assert bounded regional consensus recovers known offsets
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          const control = JSON.parse(await readFile('creative-render/build/temporal-translation-control.receipt.json','utf8'));
+          const r = JSON.parse(await readFile('creative-render/build/temporal-consensus.receipt.json','utf8'));
+          const o = r.observation;
+          if (o.hand_count !== 501 || o.recipe_count !== 508) throw new Error('pinned UC capability census drifted');
+          if (o.repeat_verification !== 'PASS') throw new Error('consensus repeat gate failed');
+          if (o.policy.regionCount !== 3 || o.policy.consensus_rule !== 'component-median-with-axis-bounded-majority-inliers/v1') throw new Error('consensus policy drifted');
+          if (o.agreement_frame_count !== o.frame_count - 1) throw new Error('not all non-reference frames passed majority-inlier agreement');
+          if (!(o.nonzero_consensus_frame_count >= 1) || !(o.mean_improved_frame_count >= 1)) throw new Error('consensus lost required motion/error evidence');
+          let countedOutliers = 0;
+          for (const row of o.motion.slice(1)) {
+            const expected = control.outputs[row.index].expected_offset;
+            if (row.consensus_dx !== expected.dx || row.consensus_dy !== expected.dy) throw new Error(`consensus ${row.consensus_dx}/${row.consensus_dy} did not recover control ${expected.dx}/${expected.dy}`);
+            if (row.inlier_count < row.quorum) throw new Error('regional consensus lost strict-majority support');
+            countedOutliers += row.outlier_indices.length;
+            const representative = row.region_tracks[row.representative_region_index];
+            if (!representative || representative.track_digest !== row.representative_track_digest || representative.consensus_inlier !== true) throw new Error('representative is not a real inlier regional track receipt');
+            console.log(`consensus_${row.index}=expected:${expected.dx}/${expected.dy},median:${row.consensus_dx}/${row.consensus_dy},raw-spread:${row.raw_spread_dx}/${row.raw_spread_dy},inliers:${row.inlier_indices.join(',')},outliers:${row.outlier_indices.join(',') || 'none'},representative:${row.representative_region_index},mean:${row.pre_mean_region_mse}->${row.post_mean_region_mse}`);
+          }
+          if (countedOutliers !== o.outlier_track_count) throw new Error('aggregate outlier count drifted');
+          console.log(`outlier_track_count=${o.outlier_track_count}`);
+          console.log('known_translation_consensus=PASS');
+          NODE
+
+      - name: Build FrameState project from exact consensus-finished frames
+        run: |
+          node creative-render/src/framestate_bridge_cli.mjs build \
+            --machine-root . \
+            --frames creative-render/build/temporal-consensus/finished/frame-000.ppm,creative-render/build/temporal-consensus/finished/frame-001.ppm,creative-render/build/temporal-consensus/finished/frame-002.ppm \
+            --project creative-render/build/temporal-consensus-project.json \
+            --receipt creative-render/build/temporal-consensus-project.receipt.json \
+            --fps 12 \
+            --hold-frames 4 \
+            --project-id axm-creative-render-temporal-consensus-proof
+
+      - name: FrameState canonical admission
+        run: |
+          PYTHONPATH=framestate/src python -m axm_framestate inspect creative-render/build/temporal-consensus-project.json > creative-render/build/temporal-consensus-inspect.json
+
+      - name: Render and assemble consensus FrameState video
+        run: |
+          set +e
+          PYTHONPATH=framestate/src python -m axm_framestate render \
+            creative-render/build/temporal-consensus-project.json \
+            creative-render/build/temporal-consensus-render \
+            --profile fast \
+            > creative-render/build/temporal-consensus-render-output.json \
+            2> creative-render/build/temporal-consensus-render-stderr.txt
+          rc=$?
+          set -e
+          echo "$rc" > creative-render/build/temporal-consensus-render-returncode.txt
+          {
+            echo "returncode=$rc"
+            echo "--- stderr ---"
+            cat creative-render/build/temporal-consensus-render-stderr.txt || true
+            echo "--- produced files ---"
+            find creative-render/build/temporal-consensus-render -maxdepth 3 -type f -printf '%P %s bytes\n' 2>/dev/null | sort || true
+          } | tee creative-render/build/temporal-consensus-render-diagnostic.txt
+          if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+          test -s creative-render/build/temporal-consensus-render/video.mp4
+          test -s creative-render/build/temporal-consensus-render/render-receipt.json
+
+      - name: Upload consensus diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-temporal-consensus-failure
+          path: |
+            creative-render/build/temporal-consensus-source/
+            creative-render/build/temporal-translation-control/
+            creative-render/build/temporal-translation-control.receipt.json
+            creative-render/build/temporal-consensus.receipt.json
+            creative-render/build/temporal-consensus-project.json
+            creative-render/build/temporal-consensus-project.receipt.json
+            creative-render/build/temporal-consensus-render-output.json
+            creative-render/build/temporal-consensus-render-stderr.txt
+            creative-render/build/temporal-consensus-render-returncode.txt
+            creative-render/build/temporal-consensus-render-diagnostic.txt
+
+      - name: FrameState deterministic repeat verification
+        run: |
+          PYTHONPATH=framestate/src python -m axm_framestate verify-repeat \
+            creative-render/build/temporal-consensus-project.json \
+            creative-render/build/temporal-consensus-repeat > creative-render/build/temporal-consensus-repeat.json
+
+      - name: FrameState read-only caller-pinned render verification
+        run: |
+          receipt_digest="$(python -c "import json; print(json.load(open('creative-render/build/temporal-consensus-render/render-receipt.json'))['receipt_digest'])")"
+          project_digest="$(python -c "import json; print(json.load(open('creative-render/build/temporal-consensus-render/render-receipt.json'))['project_digest'])")"
+          PYTHONPATH=framestate/src python -m axm_framestate verify-render \
+            creative-render/build/temporal-consensus-render \
+            --receipt-digest "$receipt_digest" \
+            --project-digest "$project_digest" > creative-render/build/temporal-consensus-verify-render.json
+
+      - name: Bind FrameState video evidence
+        run: |
+          node creative-render/src/framestate_video_verify.mjs \
+            --bridge-receipt creative-render/build/temporal-consensus-project.receipt.json \
+            --project creative-render/build/temporal-consensus-project.json \
+            --render-receipt creative-render/build/temporal-consensus-render/render-receipt.json \
+            --repeat creative-render/build/temporal-consensus-repeat.json \
+            --verify-render creative-render/build/temporal-consensus-verify-render.json \
+            --video creative-render/build/temporal-consensus-render/video.mp4 \
+            --ffmpeg-evidence creative-render/build/temporal-consensus-ffmpeg-environment.txt \
+            --out creative-render/build/temporal-consensus-framestate-video-evidence.json
+
+      - name: Bind control and consensus provenance into final video evidence
+        run: |
+          node creative-render/src/temporal_consensus_video_verify.mjs \
+            --control-receipt creative-render/build/temporal-translation-control.receipt.json \
+            --consensus-receipt creative-render/build/temporal-consensus.receipt.json \
+            --bridge-receipt creative-render/build/temporal-consensus-project.receipt.json \
+            --video-evidence creative-render/build/temporal-consensus-framestate-video-evidence.json \
+            --out creative-render/build/temporal-consensus-video-evidence.json
+
+      - name: Assert bounded consensus video result
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          const e = JSON.parse(await readFile('creative-render/build/temporal-consensus-video-evidence.json','utf8'));
+          if (e.contract !== 'AXM_CREATIVE_TEMPORAL_CONSENSUS_VIDEO_EVIDENCE' || e.version !== 1) throw new Error('combined evidence contract drifted');
+          if (e.source_frame_count !== 3 || e.realized_frame_count !== 12) throw new Error('bounded frame counts drifted');
+          if (e.fps !== 12 || e.duration_seconds !== 1) throw new Error('bounded timing drifted');
+          if (e.universal_creation_hand_count !== 501 || e.universal_creation_recipe_count !== 508) throw new Error('pinned UC census drifted');
+          if (JSON.stringify(e.expected_offsets) !== JSON.stringify([{dx:0,dy:0},{dx:4,dy:2},{dx:8,dy:5}])) throw new Error('known control offsets drifted');
+          if (e.agreement_frame_count !== 2 || e.nonzero_consensus_frame_count !== 2 || !(e.mean_improved_frame_count >= 1)) throw new Error('consensus proof lost required evidence');
+          if (e.framestate_authority !== 'EVIDENCE_ADMISSION_ONLY' || !(e.video_bytes > 0)) throw new Error('final video evidence gate failed');
+          console.log('temporal_consensus_video=PASS');
+          console.log(`video_sha256=${e.video_sha256}`);
+          console.log(`outlier_track_count=${e.outlier_track_count}`);
+          NODE
+
+      - name: Upload complete temporal consensus video proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-temporal-consensus-video-proof
+          path: |
+            creative-render/build/temporal-consensus-source/
+            creative-render/build/temporal-translation-control/
+            creative-render/build/temporal-translation-control.receipt.json
+            creative-render/build/temporal-consensus/
+            creative-render/build/temporal-consensus.receipt.json
+            creative-render/build/temporal-consensus-project.json
+            creative-render/build/temporal-consensus-project.receipt.json
+            creative-render/build/temporal-consensus-inspect.json
+            creative-render/build/temporal-consensus-render/
+            creative-render/build/temporal-consensus-repeat.json
+            creative-render/build/temporal-consensus-verify-render.json
+            creative-render/build/temporal-consensus-framestate-video-evidence.json
+            creative-render/build/temporal-consensus-video-evidence.json
+            creative-render/build/temporal-consensus-ffmpeg-environment.txt
