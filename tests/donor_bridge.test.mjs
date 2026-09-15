@@ -16,7 +16,7 @@ async function makeUcFixture(root) {
   await mkdir(dir, { recursive: true });
   await writeFile(
     join(dir, "index.js"),
-    `module.exports={creativeHands:{version:'fixture-1',audit(){return {total:2,digest:'audit-fixture'}},recipeRegistry(){return {count:3,digest:'recipes-fixture'}},invoke(id){if(id!=='creative.mesh-primitive.cube')throw Error('bad hand');return {result:{schema:'axm.precision-mesh/v1',positions:[-1,-1,0,1,-1,0,0,1,0],indices:[0,1,2]}}}}};\n`,
+    `const mesh={schema:'axm.precision-mesh/v1',positions:[-1,-1,0,1,-1,0,0,1,0],indices:[0,1,2]};\nmodule.exports={creativeHands:{version:'fixture-1',audit(){return {total:2,digest:'audit-fixture'}},recipeRegistry(){return {count:3,digest:'recipes-fixture'}}},creativeFlow:{version:'fixture-flow-1',summary(){return {state:'EXECUTABLE',digest:'flow-summary-fixture'}},run(request){return {status:'PASS',candidate_ready:true,source_state_mutated:false,digest:'flow-result-fixture',receipts:request.steps.map((step)=>({status:'PASS',operation_id:step.hand_id||step.recipe_id})),final_state:{render_mesh:mesh,bounds:{size:[2,2,0]}},outputs:{bounds:{size:[2,2,0]}}}}}};\n`,
   );
 }
 
@@ -47,14 +47,21 @@ test("precision mesh adapter emits AXM_SCENE 1 triangles", () => {
   );
 });
 
-test("Universal Creation donor is observed through its public creativeHands surface", async () => {
+test("Universal Creation donor runs a bounded Creative Flow into AXM scene state", async () => {
   const root = await mkdtemp(join(tmpdir(), "axm-cr-uc-"));
   await makeUcFixture(root);
   const result = await observeUniversalCreation(root);
   const scene = parseScene(result.sceneBytes.toString("utf8"));
   assert.equal(result.observation.hand_count, 2);
   assert.equal(result.observation.recipe_count, 3);
-  assert.equal(result.observation.probe_hand, "creative.mesh-primitive.cube");
+  assert.equal(result.observation.flow_status, "PASS");
+  assert.equal(result.observation.flow_receipt_count, 4);
+  assert.deepEqual(result.observation.flow_operations, [
+    "creative.mesh-primitive.cube",
+    "creative.mesh-transform.scale",
+    "creative.mesh-transform.rotate-y",
+    "mesh-analysis.bounds",
+  ]);
   assert.equal(scene.triangles.length, 1);
 });
 
