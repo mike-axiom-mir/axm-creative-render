@@ -1,4 +1,4 @@
-# Truth Boundary — v0.3
+# Truth Boundary — v0.4
 
 ## Verified by the repository-local implementation
 
@@ -12,6 +12,8 @@
 - Donor snapshot outputs are forbidden inside the supplied donor repository roots.
 - The temporal bridge has an explicit caller-owned skeleton/clip request, bounded increasing sample times, repeat verification, and a declared lossy adapter boundary.
 - The temporal CLI emits renderer-neutral `AXM_RENDER_REQUEST 1` files next to each sampled `AXM_SCENE 1` body instead of silently invoking a renderer inside the state sampler.
+- The post-render bridge can parse bounded P6 RGB8 PPM, construct explicit `axm.precision-raster/v1` state with opaque alpha, and export precision-raster state back to PPM.
+- The post-render bridge repeat-checks the same Creative Flow result before accepting output and refuses to overwrite the renderer source frame.
 
 ## Verified only when the v0.2 live integration workflow is green
 
@@ -45,17 +47,34 @@ A passing run establishes only these additional facts:
 
 The adapter explicitly records that normals, UVs, materials, skin, skeleton and animation-clip semantics are omitted when each deformed mesh is flattened into the current tiny `AXM_SCENE 1` contract. The passing workflow therefore proves sampled geometry-to-pixels continuity, **not semantic equivalence between the richer animation body and the renderer contract**.
 
+## Verified only when the v0.4 post-render workflow is green
+
+The dedicated `post-render-creative-hand` workflow pins Universal Creation at `30d62f80c84732dbeebd1e58984525b3f8ec1d60` and Render Fabric at `6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b`.
+
+A passing run establishes only these additional facts:
+
+- the source frame is produced by the pinned AXM native Render Fabric renderer and its receipt passes Render Fabric's independent replay verifier before creative processing;
+- that exact PPM frame can be adapted into `axm.precision-raster/v1` caller-owned working state;
+- the pinned Universal Creation public Creative Flow can execute real `creative.adjust.tint` and `creative.adjust.contrast` Hands over that rendered frame;
+- Universal Creation emits PASS receipts for both explicit post-render operations;
+- running the same input and post-render Creative Flow twice produces the same flow digest, output-raster digest and PPM bytes in the exercised environment;
+- the styled PPM differs from the original renderer PPM while retaining the same width and height;
+- `AXM_CREATIVE_POST_RENDER_RECEIPT 1` binds the exact upstream render-request bytes, upstream render-receipt bytes, source PPM and styled PPM with SHA-256.
+
+The workflow proves **an explicit after-render creative path**, not a renderer-internal pass. PPM has no alpha channel, so the adapter introduces opaque alpha 255 on intake and discards alpha on export. That boundary is part of the evidence rather than hidden.
+
 ## Not yet claimed
 
 - General compatibility with Universal Creation's full creative-Hand body.
 - A shared complete scene, material, UV, rig or animation ontology between Universal Creation and Render Fabric.
 - Preservation of Universal Creation material/texture state through the current `AXM_SCENE 1` adapter.
-- Continuous-time animation correctness between the sampled times.
+- Continuous-time animation correctness between sampled times.
 - Video encoding or a video container.
 - Direct Visual Effect Fabric injection into AXM Render Fabric.
-- A shared versioned render-pass/effect-pass contract.
-- Live renderer injection or arbitrary render plugins.
-- Frame/pixel post-processing operators over Render Fabric output.
+- A shared versioned renderer-internal render-pass/effect-pass contract.
+- GPU/WebGPU post-process shader integration.
+- Alpha-preserving post-render interchange through the current PPM proof.
+- Automatic aesthetic choice or artistic-quality acceptance for the post-render Hands.
 - Video/animation integration with FrameState.
 - Professional Body execution or professional/aesthetic acceptance.
 - Floorborn/live game-world creation.
