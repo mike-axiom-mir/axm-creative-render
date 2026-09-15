@@ -1,12 +1,13 @@
 {
   "name": "axm-creative-render",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Experimental creative operators over renderer-consumable canonical state.",
+  "description": "Experimental creative operators and explicit donor bridges over renderer-consumable canonical state.",
   "scripts": {
     "test": "node --test",
-    "proof": "node src/cli.mjs apply --scene examples/reference.axmscene --operator examples/tint.operator.json --out build/tinted.axmscene --receipt build/tinted.receipt.json"
+    "proof": "node src/cli.mjs apply --scene examples/reference.axmscene --operator examples/tint.operator.json --out build/tinted.axmscene --receipt build/tinted.receipt.json",
+    "donor-snapshot": "node src/donor_cli.mjs snapshot"
   },
   "engines": {
     "node": ">=20"
