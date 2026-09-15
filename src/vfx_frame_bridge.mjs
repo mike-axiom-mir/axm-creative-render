@@ -4,7 +4,12 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { sha256 } from "./creative_scene_operator.mjs";
-import { parsePpmRgb8, ppmToPrecisionRaster, precisionRasterToPpm } from "./post_render_bridge.mjs";
+import {
+  parsePpmRgb8,
+  ppmToPrecisionRaster,
+  precisionRasterToPpm,
+  serializePpmRgb8,
+} from "./post_render_bridge.mjs";
 
 function object(value, label) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
@@ -67,6 +72,134 @@ export async function executeElectricEffect(root, seed = 20260915) {
       svg_sha256: sha256(svgBytes),
       state_sha256: sha256(stateBytes),
       seed: Number(seed),
+    },
+  };
+}
+
+function boundedDimension(value, label) {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 1 || number > 4096) throw new Error(`${label} must be an integer in 1..4096`);
+  return number;
+}
+
+function finiteUnit(value, label) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0 || number > 1) throw new Error(`${label} must be finite and in 0..1`);
+  return number;
+}
+
+function addChannel(rgb, index, amount) {
+  rgb[index] = Math.min(255, rgb[index] + Math.max(0, Math.round(amount)));
+}
+
+function stampElectric(rgb, width, height, x, y, pathEnergy, pathWidth) {
+  const coreRadius = Math.max(1, Math.min(3, Math.round(pathWidth * 1.4)));
+  const glowRadius = Math.min(7, coreRadius + 3);
+  const core2 = coreRadius * coreRadius;
+  const glow2 = glowRadius * glowRadius;
+  const denominator = Math.max(1, glow2 - core2);
+
+  for (let dy = -glowRadius; dy <= glowRadius; dy += 1) {
+    const py = y + dy;
+    if (py < 0 || py >= height) continue;
+    for (let dx = -glowRadius; dx <= glowRadius; dx += 1) {
+      const px = x + dx;
+      if (px < 0 || px >= width) continue;
+      const distance2 = dx * dx + dy * dy;
+      if (distance2 > glow2) continue;
+      const core = distance2 <= core2;
+      const falloff = core ? 1 : Math.max(0, (glow2 - distance2) / denominator) * 0.58;
+      const strength = pathEnergy * falloff;
+      const offset = (py * width + px) * 3;
+      if (core) {
+        addChannel(rgb, offset, 230 * strength);
+        addChannel(rgb, offset + 1, 250 * strength);
+        addChannel(rgb, offset + 2, 255 * strength);
+      } else {
+        addChannel(rgb, offset, 72 * strength);
+        addChannel(rgb, offset + 1, 190 * strength);
+        addChannel(rgb, offset + 2, 255 * strength);
+      }
+    }
+  }
+}
+
+function drawSegment(rgb, width, height, start, end, energy, lineWidth) {
+  let x0 = Math.round(finiteUnit(start.x, "electric path point x") * (width - 1));
+  let y0 = Math.round(finiteUnit(start.y, "electric path point y") * (height - 1));
+  const x1 = Math.round(finiteUnit(end.x, "electric path point x") * (width - 1));
+  const y1 = Math.round(finiteUnit(end.y, "electric path point y") * (height - 1));
+  const dx = Math.abs(x1 - x0);
+  const sx = x0 < x1 ? 1 : -1;
+  const dy = -Math.abs(y1 - y0);
+  const sy = y0 < y1 ? 1 : -1;
+  let error = dx + dy;
+  let guard = 0;
+  const maxSteps = width + height + Math.max(width, height) * 2;
+
+  while (true) {
+    stampElectric(rgb, width, height, x0, y0, energy, lineWidth);
+    if (x0 === x1 && y0 === y1) break;
+    if (guard++ > maxSteps) throw new Error("electric path raster segment exceeded deterministic step bound");
+    const twice = error * 2;
+    if (twice >= dy) { error += dy; x0 += sx; }
+    if (twice <= dx) { error += dx; y0 += sy; }
+  }
+}
+
+export function rasterizeElectricStateToPpm(stateBytes, width = 320, height = 180) {
+  width = boundedDimension(width, "effect raster width");
+  height = boundedDimension(height, "effect raster height");
+  if (width * height > 4_194_304) throw new Error("effect raster exceeds 4,194,304 pixel bound");
+
+  let state;
+  try {
+    state = JSON.parse(Buffer.from(stateBytes).toString("utf8"));
+  } catch (error) {
+    throw new Error(`electric effect state must be valid JSON: ${error.message}`);
+  }
+  object(state, "electric effect state");
+  if (state.schema !== "axm.effect-work-state/v0.1") throw new Error(`unsupported electric effect state schema: ${String(state.schema)}`);
+  if (!Array.isArray(state.paths) || state.paths.length < 1 || state.paths.length > 64) throw new Error("electric effect must contain 1..64 canonical paths");
+
+  const rgb = Buffer.alloc(width * height * 3, 0);
+  let segmentCount = 0;
+  for (let pathIndex = 0; pathIndex < state.paths.length; pathIndex += 1) {
+    const path = object(state.paths[pathIndex], `electric path ${pathIndex}`);
+    if (!Array.isArray(path.points) || path.points.length < 2 || path.points.length > 256) throw new Error(`electric path ${pathIndex} must contain 2..256 points`);
+    const energyRaw = Number(path.energy ?? (path.role === "trunk" ? 1 : 0.58));
+    if (!Number.isFinite(energyRaw) || energyRaw < 0 || energyRaw > 2) throw new Error(`electric path ${pathIndex} energy must be finite and in 0..2`);
+    const widthRaw = Number(path.width ?? (path.role === "trunk" ? 1 : 0.55));
+    if (!Number.isFinite(widthRaw) || widthRaw <= 0 || widthRaw > 8) throw new Error(`electric path ${pathIndex} width must be finite and in (0,8]`);
+    const energy = Math.max(0.08, Math.min(1, energyRaw));
+    for (let pointIndex = 1; pointIndex < path.points.length; pointIndex += 1) {
+      const start = object(path.points[pointIndex - 1], `electric path ${pathIndex} point ${pointIndex - 1}`);
+      const end = object(path.points[pointIndex], `electric path ${pathIndex} point ${pointIndex}`);
+      drawSegment(rgb, width, height, start, end, energy, widthRaw);
+      segmentCount += 1;
+    }
+  }
+
+  const ppmBytes = serializePpmRgb8(width, height, rgb);
+  return {
+    ppmBytes,
+    evidence: {
+      schema: "axm.creative-render.electric-path-raster/v1",
+      width,
+      height,
+      path_count: state.paths.length,
+      segment_count: segmentCount,
+      input_state_sha256: sha256(Buffer.from(stateBytes)),
+      output_ppm_sha256: sha256(ppmBytes),
+      realized_state_fields: ["paths.points", "paths.energy", "paths.width"],
+      fixed_adapter_colour_rgb: [230, 250, 255],
+      glow_adapter_colour_rgb: [72, 190, 255],
+      retained_but_not_realized: [
+        "AetherFX layer module semantics",
+        "pulse timing semantics",
+        "SVG Gaussian-blur filter semantics",
+        "physical light interaction",
+      ],
     },
   };
 }
