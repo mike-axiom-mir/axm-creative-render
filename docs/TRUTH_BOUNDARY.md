@@ -1,4 +1,4 @@
-# Truth Boundary — v0.4
+# Truth Boundary — v0.5
 
 ## Verified by the repository-local implementation
 
@@ -8,12 +8,14 @@
 - Repeating the same local input + operator produces identical output bytes and receipt digest fields in the current implementation.
 - Unknown scene versions, operator versions and unsupported operator kinds fail explicitly.
 - A bounded adapter can convert a finite indexed precision triangle mesh into the current minimal `AXM_SCENE 1` subset while making its scale/albedo mapping explicit.
-- Explicit local donor bridges can inspect Universal Creation `creativeHands` / `creativeFlow` surfaces and execute a Visual Effect Fabric Hand graph without copying those donor implementations into this repository.
-- Donor snapshot outputs are forbidden inside the supplied donor repository roots.
+- Explicit local donor bridges can inspect Universal Creation `creativeHands` / `creativeFlow` surfaces and execute Visual Effect Fabric Hand graphs without copying those donor implementations into this repository.
+- Donor snapshot outputs are forbidden inside supplied donor repository roots.
 - The temporal bridge has an explicit caller-owned skeleton/clip request, bounded increasing sample times, repeat verification, and a declared lossy adapter boundary.
 - The temporal CLI emits renderer-neutral `AXM_RENDER_REQUEST 1` files next to each sampled `AXM_SCENE 1` body instead of silently invoking a renderer inside the state sampler.
 - The post-render bridge can parse bounded P6 RGB8 PPM, construct explicit `axm.precision-raster/v1` state with opaque alpha, and export precision-raster state back to PPM.
 - The post-render bridge repeat-checks the same Creative Flow result before accepting output and refuses to overwrite the renderer source frame.
+- The VFX source bridge can execute a donor electric Hand graph twice and require matching final-state/SVG evidence before accepting the derived SVG.
+- The VFX frame-composite bridge requires base/effect raster dimensions to match and repeat-checks the same Universal Creation screen-composite flow before accepting output.
 
 ## Verified only when the v0.2 live integration workflow is green
 
@@ -63,6 +65,25 @@ A passing run establishes only these additional facts:
 
 The workflow proves **an explicit after-render creative path**, not a renderer-internal pass. PPM has no alpha channel, so the adapter introduces opaque alpha 255 on intake and discards alpha on export. That boundary is part of the evidence rather than hidden.
 
+## Verified only when the v0.5 VFX frame workflow is green
+
+The dedicated `vfx-frame-composite` workflow pins Visual Effect Fabric at `6639742ec3b909ae697dadb5b5290b94b41354a3`, Universal Creation at `30d62f80c84732dbeebd1e58984525b3f8ec1d60`, and Render Fabric at `6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b`.
+
+A passing run establishes only these additional facts:
+
+- the pinned Visual Effect Fabric donor can execute the real `fx.electric-storm` Hand graph through its own runtime;
+- the same explicit seed repeats to the same final-state hash and derived SVG bytes in the exercised environment;
+- canonical electric paths remain separate from the derived SVG realization;
+- an explicitly resolved ImageMagick executable can rasterize that SVG to a 320x180 RGB8 PPM in the exercised runner, with executable path, executable SHA-256 and version text retained as evidence;
+- the source Render Fabric frame is independently receipt-verified before compositing;
+- the effect PPM and Render Fabric PPM can be adapted into Universal Creation precision-raster state at matching dimensions;
+- Universal Creation Creative Flow executes real `creative.composite.screen` and `creative.adjust.contrast` Hands over those two raster states;
+- running that same composite flow twice produces identical flow/output-raster/PPM evidence in the exercised environment;
+- the final composited PPM differs from the base Render Fabric frame;
+- `AXM_CREATIVE_VFX_COMPOSITE_RECEIPT 1` binds the exact Render Fabric request/receipt/frame, VFX source receipt/SVG, effect raster, rasterizer evidence, UC flow evidence and final PPM.
+
+This proves an **explicit VFX source -> realization -> post-render composite path**. It does not prove that the VFX graph runs natively inside Render Fabric.
+
 ## Not yet claimed
 
 - General compatibility with Universal Creation's full creative-Hand body.
@@ -70,11 +91,13 @@ The workflow proves **an explicit after-render creative path**, not a renderer-i
 - Preservation of Universal Creation material/texture state through the current `AXM_SCENE 1` adapter.
 - Continuous-time animation correctness between sampled times.
 - Video encoding or a video container.
-- Direct Visual Effect Fabric injection into AXM Render Fabric.
+- Native Visual Effect Fabric injection into AXM Render Fabric.
 - A shared versioned renderer-internal render-pass/effect-pass contract.
 - GPU/WebGPU post-process shader integration.
+- Physical scene-lighting interaction from the composited electric effect.
 - Alpha-preserving post-render interchange through the current PPM proof.
-- Automatic aesthetic choice or artistic-quality acceptance for the post-render Hands.
+- ImageMagick SVG raster determinism across machines or attestation of all loaded delegates/libraries.
+- Automatic aesthetic choice or artistic-quality acceptance for post-render/VFX Hands.
 - Video/animation integration with FrameState.
 - Professional Body execution or professional/aesthetic acceptance.
 - Floorborn/live game-world creation.
