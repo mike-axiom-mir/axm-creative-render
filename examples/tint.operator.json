@@ -1,0 +1,12 @@
+{
+  "contract": "AXM_CREATIVE_OPERATOR",
+  "version": 1,
+  "id": "axm.creative.tint.warm-test",
+  "domain": "scene",
+  "kind": "tint",
+  "parameters": {
+    "r_scale": 1.0,
+    "g_scale": 0.5,
+    "b_scale": 1.5
+  }
+}
