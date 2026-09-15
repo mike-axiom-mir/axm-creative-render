@@ -30,7 +30,10 @@ Implemented local operators:
 `src/donor_bridge.mjs` and `src/donor_cli.mjs` add a deliberately explicit local bridge to current AXM creative bodies.
 
 ```text
-Universal Creation creative Hand
+Universal Creation Creative Flow
+          |
+   several real Hands
+ create -> scale -> rotate -> inspect
           |
           v
   precision mesh state
@@ -66,7 +69,7 @@ Current pinned donors for the v0.2 proof:
 - `axm-universal-creation@c5496a17b9580abf870432ed2fed324b86d1fa37`
 - `axm-visual-effect-fabric@6639742ec3b909ae697dadb5b5290b94b41354a3`
 
-The Universal Creation bridge calls its public `PlatformHands.creativeHands` service, observes its audit/recipe registry, executes `creative.mesh-primitive.cube`, adapts that precision mesh into the currently tiny Render Fabric scene subset, and hands it to the native renderer in CI.
+The Universal Creation bridge observes the public `PlatformHands.creativeHands` audit/recipe registry and then executes a bounded `PlatformHands.creativeFlow` plan. That plan creates a cube, scales it, rotates it and inspects its bounds through existing Universal Creation Hands/recipes. Creative Render adapts only the final precision mesh into the currently tiny Render Fabric scene subset and hands that scene to the native renderer in CI.
 
 The Visual Effect Fabric bridge executes the exported state-native holographic-AI Hand graph through the donor's own runtime. Creative Render records the exact donor source digests, graph/final-state evidence, working-set facts, and derived HTML realization. The effect implementation stays in Visual Effect Fabric.
 
@@ -94,7 +97,7 @@ No network discovery or silent repository fetching occurs in the bridge itself. 
 
 The experiment is no longer limited to two toy operations invented inside this repository.
 
-Universal Creation now carries a large deterministic creative-Hand body spanning raster/masks/compositing, precision meshes, local modeling, sculpt/UV/topology work, deeper modeling, rigging and animation. Creative Render can begin treating that body as **callable creative machinery around rendering**, instead of duplicating it.
+Universal Creation now carries a large deterministic creative-Hand body spanning raster/masks/compositing, precision meshes, local modeling, sculpt/UV/topology work, deeper modeling, rigging and animation. Creative Render can begin treating that body as **callable creative machinery around rendering**, instead of duplicating it. The v0.2 proof already uses Creative Flow rather than pretending a single primitive call represents the larger system.
 
 Visual Effect Fabric contributes the other half: deterministic special-effect Hand graphs with editable checkpoints and replaceable realizations, including a state-native holographic AI that already applies the `canonical state -> rebuildable working set -> small state deltas` direction.
 
@@ -149,7 +152,7 @@ v0.2 is still an **integration experiment**, not a finished creative studio or u
 It aims to prove three bounded facts:
 
 1. local creative state can be changed deterministically and receipted;
-2. one real Universal Creation precision-mesh Hand can cross an explicit adapter into Render Fabric and become actual pixels;
+2. one real bounded Universal Creation Creative Flow can create/transform a precision mesh, cross an explicit adapter into Render Fabric and become actual pixels;
 3. one real Visual Effect Fabric state-native Hand graph can execute through its own donor runtime and return inspectable canonical/derived-state evidence.
 
 It does **not** yet claim general Universal Creation compatibility, shared material/lighting/rig/animation contracts, direct VFX injection into Render Fabric, frame/post-process plugins, game-world mutation, FrameState video integration, AI visual judgment, professional acceptance, visual quality, GPU parity, cross-machine bitwise determinism, or autonomous creativity.
