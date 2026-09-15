@@ -11,7 +11,7 @@ function parseArgs(argv) {
     if (!key?.startsWith("--") || value === undefined) throw new Error("arguments must be --key value pairs");
     values[key.slice(2)] = value;
   }
-  for (const key of ["bridge-receipt", "project", "render-receipt", "repeat", "verify-render", "video", "out"]) {
+  for (const key of ["bridge-receipt", "project", "render-receipt", "repeat", "verify-render", "video", "ffmpeg-evidence", "out"]) {
     if (!values[key]) throw new Error(`missing --${key}`);
   }
   return values;
@@ -34,11 +34,24 @@ try {
   const repeatPath = resolve(args.repeat);
   const verifyRenderPath = resolve(args["verify-render"]);
   const videoPath = resolve(args.video);
+  const ffmpegEvidencePath = resolve(args["ffmpeg-evidence"]);
   const outPath = resolve(args.out);
 
-  const [bridgeReceiptBytes, projectBytes, renderReceiptBytes, repeatBytes, verifyBytes, videoBytes] = await Promise.all([
-    readFile(bridgeReceiptPath), readFile(projectPath), readFile(renderReceiptPath), readFile(repeatPath), readFile(verifyRenderPath), readFile(videoPath),
+  const [bridgeReceiptBytes, projectBytes, renderReceiptBytes, repeatBytes, verifyBytes, videoBytes, ffmpegEnvironmentBytes] = await Promise.all([
+    readFile(bridgeReceiptPath),
+    readFile(projectPath),
+    readFile(renderReceiptPath),
+    readFile(repeatPath),
+    readFile(verifyRenderPath),
+    readFile(videoPath),
+    readFile(ffmpegEvidencePath),
   ]);
+  if (ffmpegEnvironmentBytes.length === 0) throw new Error("FFmpeg environment evidence is empty");
+  const ffmpegEnvironmentText = ffmpegEnvironmentBytes.toString("utf8");
+  if (!ffmpegEnvironmentText.includes("resolved_executable=") || !ffmpegEnvironmentText.includes("package_version=")) {
+    throw new Error("FFmpeg environment evidence is incomplete");
+  }
+
   const [bridge, renderReceipt, repeat, verify] = await Promise.all([
     json(bridgeReceiptPath, "FrameState bridge receipt"),
     json(renderReceiptPath, "FrameState render receipt"),
@@ -83,9 +96,12 @@ try {
     video_sha256: sha256(videoBytes),
     video_bytes: videoBytes.length,
     ffmpeg_boundary: {
+      environment_sha256: sha256(ffmpegEnvironmentBytes),
+      environment_text: ffmpegEnvironmentText.trim(),
       version: renderReceipt.assembly.version ?? null,
       profile: renderReceipt.assembly.profile ?? null,
       bit_exact_claim: renderReceipt.assembly.bit_exact_claim ?? false,
+      installation_scope: "GitHub Actions proof runner only; FrameState keeps FFmpeg as an explicit optional external assembly boundary",
     },
     truth_boundary: {
       proves: [
@@ -93,9 +109,11 @@ try {
         "FrameState rendered the declared frame count and its own deterministic repeat verification passed in the exercised runtime",
         "FrameState's read-only verifier admitted the caller-pinned render evidence with EVIDENCE_ADMISSION_ONLY authority",
         "FrameState successfully assembled a playable MP4 whose exact bytes are bound here and in its render receipt",
+        "the CI-only FFmpeg installation environment used for this assembly proof is retained as exact evidence",
       ],
       does_not_prove: [
         "bit-identical MP4 encoding across FFmpeg versions or machines",
+        "that FFmpeg is bundled with or required by Creative Render outside this explicit proof path",
         "motion interpolation between the sparse source samples",
         "visual or cinematic quality",
         "native FrameState understanding of Universal Creation rig or Visual Effect Fabric semantics",
@@ -110,6 +128,7 @@ try {
   console.log(`duration_seconds=${evidence.duration_seconds}`);
   console.log(`video_sha256=${evidence.video_sha256}`);
   console.log(`video_bytes=${evidence.video_bytes}`);
+  console.log(`ffmpeg_environment_sha256=${evidence.ffmpeg_boundary.environment_sha256}`);
   console.log(`authority=${evidence.framestate_authority}`);
   console.log(`evidence_sha256=${sha256(outBytes)}`);
 } catch (error) {
