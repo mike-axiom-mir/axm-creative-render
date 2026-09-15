@@ -78,17 +78,58 @@ export async function observeUniversalCreation(root) {
   const require = createRequire(import.meta.url);
   const platform = require(entryPath);
   const hands = platform?.creativeHands;
-  if (!hands || typeof hands.audit !== "function" || typeof hands.recipeRegistry !== "function" || typeof hands.invoke !== "function") {
+  const flow = platform?.creativeFlow;
+  if (!hands || typeof hands.audit !== "function" || typeof hands.recipeRegistry !== "function") {
     throw new Error("Universal Creation donor does not expose the expected creativeHands service");
+  }
+  if (!flow || typeof flow.summary !== "function" || typeof flow.run !== "function") {
+    throw new Error("Universal Creation donor does not expose the expected creativeFlow service");
   }
 
   const audit = requireObject(hands.audit(), "creative hands audit");
   const recipes = requireObject(hands.recipeRegistry(), "creative recipe registry");
-  const invoked = requireObject(
-    hands.invoke("creative.mesh-primitive.cube", { spec: { id: "creative-render-live-donor-cube", detail: 8 } }),
-    "creative hand result",
-  );
-  const mesh = requireObject(invoked.result, "creative mesh result");
+  const flowSummary = requireObject(flow.summary(), "creative flow summary");
+  const flowRequest = {
+    mode: "execute",
+    goal: "build a renderable shaped cube through explicit deterministic creative hands",
+    state: { bridge: "axm-creative-render-v0.2" },
+    steps: [
+      {
+        id: "make",
+        hand_id: "creative.mesh-primitive.cube",
+        args: { spec: { id: "creative-render-live-donor-cube", detail: 8 } },
+        save_as: "mesh",
+      },
+      {
+        id: "scale",
+        hand_id: "creative.mesh-transform.scale",
+        args: { mesh: { $state: "mesh" }, vector: [1.35, 0.8, 1.1] },
+        save_as: "scaled",
+      },
+      {
+        id: "rotate",
+        hand_id: "creative.mesh-transform.rotate-y",
+        args: { mesh: { $state: "scaled" }, degrees: 24 },
+        save_as: "render_mesh",
+      },
+      {
+        id: "bounds",
+        recipe_id: "mesh-analysis.bounds",
+        args: { mesh: { $state: "render_mesh" } },
+        save_as: "bounds",
+      },
+    ],
+    expose: { bounds: { $state: "bounds" } },
+  };
+  const flowResult = requireObject(flow.run(flowRequest), "creative flow result");
+  if (flowResult.status !== "PASS" || flowResult.candidate_ready !== true || flowResult.source_state_mutated !== false) {
+    throw new Error(`Universal Creation Creative Flow did not pass cleanly: ${String(flowResult.status)}`);
+  }
+  if (!Array.isArray(flowResult.receipts) || flowResult.receipts.length !== flowRequest.steps.length) {
+    throw new Error("Universal Creation Creative Flow receipt count drifted");
+  }
+  const mesh = requireObject(flowResult.final_state?.render_mesh, "Creative Flow render mesh");
+  const bounds = requireObject(flowResult.final_state?.bounds, "Creative Flow bounds");
   const meshInfo = validatePrecisionMesh(mesh);
   const sceneBytes = Buffer.from(serializeScene(precisionMeshToAxmScene(mesh)), "utf8");
 
@@ -103,7 +144,13 @@ export async function observeUniversalCreation(root) {
       hand_audit_digest: audit.digest ?? null,
       recipe_count: recipes.count,
       recipe_registry_digest: recipes.digest ?? null,
-      probe_hand: "creative.mesh-primitive.cube",
+      creative_flow_version: String(flow.version ?? "unknown"),
+      creative_flow_summary_digest: flowSummary.digest ?? null,
+      flow_status: flowResult.status,
+      flow_digest: flowResult.digest ?? null,
+      flow_receipt_count: flowResult.receipts.length,
+      flow_operations: flowResult.receipts.map((row) => row.operation_id ?? row.hand_id ?? row.recipe_id ?? null),
+      flow_bounds_size: bounds.size ?? null,
       probe_result_schema: mesh.schema ?? null,
       probe_vertex_count: meshInfo.vertexCount,
       probe_triangle_count: meshInfo.triangleCount,
