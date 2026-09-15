@@ -52,10 +52,18 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Verify external video assembly boundary exists
+      - name: Install explicit FFmpeg video assembly boundary for CI proof
         run: |
-          command -v ffmpeg
-          ffmpeg -version | head -n 1
+          set -euo pipefail
+          mkdir -p creative-render/build
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          {
+            echo "resolved_executable=$(readlink -f "$(command -v ffmpeg)")"
+            echo "package_version=$(dpkg-query -W -f='${Version}' ffmpeg)"
+            ffmpeg -version | head -n 1
+          } | tee creative-render/build/framestate-ffmpeg-environment.txt
+          test -s creative-render/build/framestate-ffmpeg-environment.txt
 
       - name: Run Creative Render tests
         run: npm --prefix creative-render test
@@ -137,6 +145,7 @@ jobs:
             --repeat creative-render/build/framestate-repeat.json \
             --verify-render creative-render/build/framestate-verify-render.json \
             --video creative-render/build/framestate-render/video.mp4 \
+            --ffmpeg-evidence creative-render/build/framestate-ffmpeg-environment.txt \
             --out creative-render/build/framestate-video-evidence.json
 
       - name: Assert bounded video result
@@ -151,9 +160,11 @@ jobs:
           if (evidence.framestate_repeat_passed !== true) throw new Error('FrameState repeat gate failed');
           if (evidence.framestate_authority !== 'EVIDENCE_ADMISSION_ONLY') throw new Error('FrameState authority boundary drifted');
           if (!(evidence.video_bytes > 0)) throw new Error('video is empty');
+          if (!evidence.ffmpeg_boundary?.environment_sha256) throw new Error('FFmpeg environment evidence is missing');
           console.log('framestate_video_bridge=PASS');
           console.log(`video_sha256=${evidence.video_sha256}`);
           console.log(`video_bytes=${evidence.video_bytes}`);
+          console.log(`ffmpeg_environment_sha256=${evidence.ffmpeg_boundary.environment_sha256}`);
           console.log(`verification_digest=${evidence.framestate_render_output_verification_digest}`);
           NODE
 
@@ -166,6 +177,7 @@ jobs:
             creative-render/build/framestate-project.json
             creative-render/build/framestate-project.receipt.json
             creative-render/build/framestate-inspect.json
+            creative-render/build/framestate-ffmpeg-environment.txt
             creative-render/build/framestate-render/
             creative-render/build/framestate-repeat.json
             creative-render/build/framestate-verify-render.json
