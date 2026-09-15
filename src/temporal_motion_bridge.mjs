@@ -7,6 +7,7 @@ import { sha256 } from "./creative_scene_operator.mjs";
 
 const MAX_SEQUENCE_FRAMES = 16;
 const MAX_TOTAL_RGBA_BYTES = 32 * 1024 * 1024;
+const MAX_TRACK_WORK = 32_000_000;
 const TRACK_HAND = "creative.frame-finish.block-match-track";
 const STABILIZE_HAND = "creative.frame-finish.stabilize-translation";
 const DIFFERENCE_HAND = "creative.frame-finish.difference-frame";
@@ -15,6 +16,10 @@ const TRAIL_HAND = "creative.frame-finish.motion-trail";
 function object(value, label) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
   return value;
+}
+
+function clamp(value, low, high) {
+  return Math.max(low, Math.min(high, value));
 }
 
 function boundedInt(value, label, low, high) {
@@ -29,20 +34,99 @@ function boundedDecay(value) {
   return n;
 }
 
-function normalizePolicy(width, height, policy = {}) {
-  const region = {
-    x: boundedInt(policy.x ?? Math.floor(width * 0.34), "region x", 0, width - 2),
-    y: boundedInt(policy.y ?? Math.floor(height * 0.39), "region y", 0, height - 2),
-    width: boundedInt(policy.width ?? Math.max(2, Math.floor(width * 0.25)), "region width", 2, width),
-    height: boundedInt(policy.height ?? Math.max(2, Math.floor(height * 0.22)), "region height", 2, height),
+function normalizeControls(policy = {}) {
+  return {
+    searchRadius: boundedInt(policy.searchRadius ?? 16, "searchRadius", 0, 64),
+    trailWindow: boundedInt(policy.trailWindow ?? 3, "trailWindow", 1, 8),
+    decay: boundedDecay(policy.decay ?? 0.65),
   };
-  if (region.x + region.width > width || region.y + region.height > height) throw new Error("tracking region must remain inside the frame");
-  const searchRadius = boundedInt(policy.searchRadius ?? 16, "searchRadius", 0, 64);
-  const trailWindow = boundedInt(policy.trailWindow ?? 3, "trailWindow", 1, 8);
-  const decay = boundedDecay(policy.decay ?? 0.65);
-  const work = region.width * region.height * ((searchRadius * 2 + 1) ** 2);
-  if (work > 32_000_000) throw new Error("tracking policy exceeds Universal Creation block-match work budget");
-  return { region, searchRadius, trailWindow, decay, work };
+}
+
+function normalizeRegion(width, height, region, searchRadius) {
+  region = object(region, "tracking region");
+  const normalized = {
+    x: boundedInt(region.x, "region x", 0, width - 2),
+    y: boundedInt(region.y, "region y", 0, height - 2),
+    width: boundedInt(region.width, "region width", 2, width),
+    height: boundedInt(region.height, "region height", 2, height),
+  };
+  if (normalized.x + normalized.width > width || normalized.y + normalized.height > height) throw new Error("tracking region must remain inside the frame");
+  const work = normalized.width * normalized.height * ((searchRadius * 2 + 1) ** 2);
+  if (work > MAX_TRACK_WORK) throw new Error("tracking policy exceeds Universal Creation block-match work budget");
+  return { ...normalized, work };
+}
+
+function pixelOffset(width, x, y) {
+  return (y * width + x) * 3;
+}
+
+function edgeEnergy(rgb, frameWidth, x0, y0, width, height) {
+  let score = 0;
+  for (let y = y0; y < y0 + height; y += 1) {
+    for (let x = x0; x < x0 + width; x += 1) {
+      const current = pixelOffset(frameWidth, x, y);
+      if (x + 1 < x0 + width) {
+        const right = current + 3;
+        score += Math.abs(rgb[current] - rgb[right]);
+        score += Math.abs(rgb[current + 1] - rgb[right + 1]);
+        score += Math.abs(rgb[current + 2] - rgb[right + 2]);
+      }
+      if (y + 1 < y0 + height) {
+        const down = current + frameWidth * 3;
+        score += Math.abs(rgb[current] - rgb[down]);
+        score += Math.abs(rgb[current + 1] - rgb[down + 1]);
+        score += Math.abs(rgb[current + 2] - rgb[down + 2]);
+      }
+    }
+  }
+  return score;
+}
+
+export function chooseTrackingRegion(ppmBytes, searchRadius = 16) {
+  const parsed = parsePpmRgb8(ppmBytes);
+  const radius = boundedInt(searchRadius, "searchRadius", 0, 64);
+  const availableWidth = parsed.width - radius * 2;
+  const availableHeight = parsed.height - radius * 2;
+  if (availableWidth < 12 || availableHeight < 12) throw new Error("frame is too small for the requested tracking radius");
+
+  const tileWidth = clamp(Math.floor(parsed.width / 6), 16, Math.min(56, availableWidth));
+  const tileHeight = clamp(Math.floor(parsed.height / 5), 16, Math.min(40, availableHeight));
+  const xMin = radius;
+  const yMin = radius;
+  const xMax = parsed.width - radius - tileWidth;
+  const yMax = parsed.height - radius - tileHeight;
+  const stride = Math.max(2, Math.floor(Math.min(tileWidth, tileHeight) / 4));
+  let best = null;
+  let candidates = 0;
+
+  const xs = [];
+  const ys = [];
+  for (let x = xMin; x <= xMax; x += stride) xs.push(x);
+  for (let y = yMin; y <= yMax; y += stride) ys.push(y);
+  if (xs.at(-1) !== xMax) xs.push(xMax);
+  if (ys.at(-1) !== yMax) ys.push(yMax);
+
+  for (const y of ys) {
+    for (const x of xs) {
+      const score = edgeEnergy(parsed.rgb, parsed.width, x, y, tileWidth, tileHeight);
+      candidates += 1;
+      if (best === null || score > best.score) best = { x, y, width: tileWidth, height: tileHeight, score };
+    }
+  }
+  if (!best || best.score <= 0) throw new Error("no spatially distinctive tracking region was found in the reference frame");
+  const work = best.width * best.height * ((radius * 2 + 1) ** 2);
+  if (work > MAX_TRACK_WORK) throw new Error("selected tracking region exceeds Universal Creation block-match work budget");
+  return {
+    region: { x: best.x, y: best.y, width: best.width, height: best.height },
+    selection: {
+      method: "max-local-rgb-edge-energy/v1",
+      score: best.score,
+      candidate_count: candidates,
+      stride,
+      search_margin: radius,
+      work,
+    },
+  };
 }
 
 async function digestFile(path) {
@@ -64,7 +148,23 @@ export function buildTemporalMotionRequest(rasters, policy = {}) {
     throw new Error(`temporal motion requires 2..${MAX_SEQUENCE_FRAMES} raster frames`);
   }
   const first = object(rasters[0], "first raster");
-  const normalized = normalizePolicy(Number(first.width), Number(first.height), policy);
+  const width = boundedInt(first.width, "first raster width", 2, 16384);
+  const height = boundedInt(first.height, "first raster height", 2, 16384);
+  const controls = normalizeControls(policy);
+  const sourceRegion = policy.region ?? {
+    x: Math.floor(width * 0.34),
+    y: Math.floor(height * 0.39),
+    width: Math.max(2, Math.floor(width * 0.25)),
+    height: Math.max(2, Math.floor(height * 0.22)),
+  };
+  const region = normalizeRegion(width, height, sourceRegion, controls.searchRadius);
+  const normalized = {
+    region: { x: region.x, y: region.y, width: region.width, height: region.height },
+    searchRadius: controls.searchRadius,
+    trailWindow: controls.trailWindow,
+    decay: controls.decay,
+    work: region.work,
+  };
   const steps = [
     {
       id: "trail-000",
@@ -185,7 +285,20 @@ export async function analyzeAndFinishTemporalPpms(root, ppmFrames, policy = {})
     rgbaBytes += row.width * row.height * 4;
   }
   if (rgbaBytes > MAX_TOTAL_RGBA_BYTES) throw new Error("temporal motion sequence exceeds bounded in-memory raster budget");
-  const normalized = normalizePolicy(width, height, policy);
+
+  const controls = normalizeControls(policy);
+  const selected = policy.region
+    ? { region: normalizeRegion(width, height, policy.region, controls.searchRadius), selection: { method: "caller-explicit/v1" } }
+    : chooseTrackingRegion(parsed[0].bytes, controls.searchRadius);
+  const requestPolicy = {
+    ...controls,
+    region: {
+      x: selected.region.x,
+      y: selected.region.y,
+      width: selected.region.width,
+      height: selected.region.height,
+    },
+  };
 
   const rootPath = resolve(root);
   const entryPath = resolve(rootPath, "capabilities/platform-hands/index.js");
@@ -204,7 +317,7 @@ export async function analyzeAndFinishTemporalPpms(root, ppmFrames, policy = {})
   }
 
   const rasters = parsed.map((row) => ppmToPrecisionRaster(row.bytes));
-  const request = buildTemporalMotionRequest(rasters, normalized);
+  const request = buildTemporalMotionRequest(rasters, requestPolicy);
   const first = flow.run(request);
   const firstState = validateFlowResult(first, rasters.length);
   const second = flow.run(request);
@@ -220,15 +333,18 @@ export async function analyzeAndFinishTemporalPpms(root, ppmFrames, policy = {})
     const finishedB = precisionRasterToPpm(secondState.finished[index]);
     if (firstState.finished[index].digest !== secondState.finished[index].digest || !finishedA.equals(finishedB)) throw new Error(`finished frame ${index} did not repeat exactly`);
     outputPpms.push(finishedA);
+
     const stableA = precisionRasterToPpm(firstState.stabilized[index]);
     const stableB = precisionRasterToPpm(secondState.stabilized[index]);
     if (firstState.stabilized[index].digest !== secondState.stabilized[index].digest || !stableA.equals(stableB)) throw new Error(`stabilized frame ${index} did not repeat exactly`);
     stabilizationPpms.push(stableA);
+
     if (index === 0) {
       differencePpms.push(null);
       motion.push({ index, reference: true, dx: 0, dy: 0, tracker_mse: 0, pre_region_mse: 0, post_region_mse: 0, improved_or_equal: true });
       continue;
     }
+
     const trackA = firstState.tracks[index];
     const trackB = secondState.tracks[index];
     if (trackA.digest !== trackB.digest || trackA.dx !== trackB.dx || trackA.dy !== trackB.dy || trackA.mse !== trackB.mse) throw new Error(`track ${index} did not repeat exactly`);
@@ -236,8 +352,8 @@ export async function analyzeAndFinishTemporalPpms(root, ppmFrames, policy = {})
     const diffB = precisionRasterToPpm(secondState.differences[index]);
     if (firstState.differences[index].digest !== secondState.differences[index].digest || !diffA.equals(diffB)) throw new Error(`difference frame ${index} did not repeat exactly`);
     differencePpms.push(diffA);
-    const pre = regionMse(parsed[0].bytes, parsed[index].bytes, normalized.region);
-    const post = regionMse(parsed[0].bytes, stableA, normalized.region);
+    const pre = regionMse(parsed[0].bytes, parsed[index].bytes, request.policy.region);
+    const post = regionMse(parsed[0].bytes, stableA, request.policy.region);
     motion.push({
       index,
       reference: false,
@@ -255,7 +371,7 @@ export async function analyzeAndFinishTemporalPpms(root, ppmFrames, policy = {})
   const recipes = object(hands.recipeRegistry(), "creative recipe registry");
   const flowSummary = object(flow.summary(), "creative flow summary");
   const nonzeroTracks = motion.slice(1).filter((row) => row.dx !== 0 || row.dy !== 0).length;
-  const improvedTracks = motion.slice(1).filter((row) => row.improved_or_equal && row.post_region_mse < row.pre_region_mse).length;
+  const improvedTracks = motion.slice(1).filter((row) => row.post_region_mse < row.pre_region_mse).length;
 
   return {
     outputPpms,
@@ -278,7 +394,11 @@ export async function analyzeAndFinishTemporalPpms(root, ppmFrames, policy = {})
       width,
       height,
       total_rgba_bytes: rgbaBytes,
-      policy: normalized,
+      policy: request.policy,
+      region_selection: {
+        ...selected.selection,
+        region: request.policy.region,
+      },
       motion,
       nonzero_track_count: nonzeroTracks,
       strictly_improved_track_count: improvedTracks,
@@ -288,7 +408,8 @@ export async function analyzeAndFinishTemporalPpms(root, ppmFrames, policy = {})
       repeat_verification: "PASS",
       truth_boundary: {
         proves: [
-          "Universal Creation block-match tracking executes over explicit caller-bounded regions on exact rendered frames",
+          "the tracking region was deterministically selected from explicit reference-frame edge evidence unless a caller supplied one",
+          "Universal Creation block-match tracking executes over that caller-bounded region on exact rendered frames",
           "the resulting track receipts bind exact reference/current raster digests and can drive Universal Creation translation stabilization",
           "stabilized frames, residual difference frames and aligned motion-trail outputs repeat exactly under the same input and policy",
           "region MSE before/after stabilization is measured explicitly by the bridge without claiming semantic correctness",
