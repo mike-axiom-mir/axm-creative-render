@@ -1,0 +1,137 @@
+name: vfx-frame-composite
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vfx-frame-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-vfx-frame-composite:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned Universal Creation donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-universal-creation
+          ref: 30d62f80c84732dbeebd1e58984525b3f8ec1d60
+          path: universal-creation
+
+      - name: Checkout pinned Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: 6639742ec3b909ae697dadb5b5290b94b41354a3
+          path: visual-effect-fabric
+
+      - name: Checkout pinned Render Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Build Render Fabric
+        run: cmake -S render-fabric -B render-fabric/build && cmake --build render-fabric/build --config Release && ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Prepare and render source frame
+        run: |
+          mkdir -p creative-render/build/vfx-frame
+          cp creative-render/examples/reference.axmscene creative-render/build/vfx-frame/source.axmscene
+          printf '%s\n' '# AXM Creative Render VFX composite source.' 'AXM_RENDER_REQUEST 1' 'scene source.axmscene' 'backend axm.native.cpu.reference' 'width 320' 'height 180' 'format ppm-rgb8' 'output source.ppm' > creative-render/build/vfx-frame/source.axmrender
+          render-fabric/build/axm-render --request creative-render/build/vfx-frame/source.axmrender --receipt creative-render/build/vfx-frame/source.axmreceipt
+          render-fabric/build/axm-render-verify-receipt creative-render/build/vfx-frame/source.axmrender creative-render/build/vfx-frame/source.axmreceipt
+
+      - name: Execute Visual Effect Fabric electric Hand graph
+        run: |
+          node creative-render/src/vfx_export_cli.mjs export \
+            --vfx-root visual-effect-fabric \
+            --svg creative-render/build/vfx-frame/electric.svg \
+            --state creative-render/build/vfx-frame/electric-state.json \
+            --receipt creative-render/build/vfx-frame/electric.receipt.json \
+            --seed 20260915
+
+      - name: Materialize canonical electric path state into a bounded effect raster
+        run: |
+          node creative-render/src/vfx_rasterize_cli.mjs rasterize \
+            --state creative-render/build/vfx-frame/electric-state.json \
+            --vfx-receipt creative-render/build/vfx-frame/electric.receipt.json \
+            --out creative-render/build/vfx-frame/electric.ppm \
+            --receipt creative-render/build/vfx-frame/electric-raster.receipt.json \
+            --width 320 \
+            --height 180
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { parsePpmRgb8 } from './creative-render/src/post_render_bridge.mjs';
+          const receipt = JSON.parse(await readFile('creative-render/build/vfx-frame/electric-raster.receipt.json','utf8'));
+          if (receipt.contract !== 'AXM_CREATIVE_VFX_RASTER_RECEIPT' || receipt.version !== 1) throw new Error('VFX raster receipt contract drifted');
+          if (receipt.adapter?.schema !== 'axm.creative-render.electric-path-raster/v1') throw new Error('unexpected VFX raster adapter');
+          if (receipt.repeat_verification !== 'PASS') throw new Error('VFX raster repeat verification failed');
+          const effect = parsePpmRgb8(await readFile('creative-render/build/vfx-frame/electric.ppm'));
+          if (effect.width !== 320 || effect.height !== 180) throw new Error(`unexpected VFX raster dimensions ${effect.width}x${effect.height}`);
+          console.log('vfx_raster=PASS');
+          NODE
+
+      - name: Composite special effect over Render Fabric frame using Universal Creation Hands
+        run: |
+          node creative-render/src/vfx_composite_cli.mjs composite \
+            --uc-root universal-creation \
+            --base creative-render/build/vfx-frame/source.ppm \
+            --effect creative-render/build/vfx-frame/electric.ppm \
+            --output creative-render/build/vfx-frame/composited.ppm \
+            --receipt creative-render/build/vfx-frame/composite.receipt.json \
+            --render-request creative-render/build/vfx-frame/source.axmrender \
+            --render-receipt creative-render/build/vfx-frame/source.axmreceipt \
+            --vfx-receipt creative-render/build/vfx-frame/electric.receipt.json \
+            --vfx-svg creative-render/build/vfx-frame/electric.svg \
+            --vfx-raster-receipt creative-render/build/vfx-frame/electric-raster.receipt.json
+
+      - name: Assert full VFX-to-frame evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { parsePpmRgb8 } from './creative-render/src/post_render_bridge.mjs';
+          const receipt = JSON.parse(await readFile('creative-render/build/vfx-frame/composite.receipt.json', 'utf8'));
+          if (receipt.contract !== 'AXM_CREATIVE_VFX_COMPOSITE_RECEIPT' || receipt.version !== 1) throw new Error('VFX composite receipt contract drifted');
+          if (receipt.vfx_source.graph_id !== 'fx.electric-storm') throw new Error(`unexpected VFX graph ${receipt.vfx_source.graph_id}`);
+          if (receipt.vfx_source.raster_adapter_schema !== 'axm.creative-render.electric-path-raster/v1') throw new Error(`unexpected VFX raster adapter ${receipt.vfx_source.raster_adapter_schema}`);
+          if (receipt.universal_creation.hand_count !== 441 || receipt.universal_creation.recipe_count !== 448) throw new Error('UC public creative census drifted');
+          const expected = ['creative.composite.screen','creative.adjust.contrast'];
+          if (JSON.stringify(receipt.universal_creation.operation_ids) !== JSON.stringify(expected)) throw new Error(`composite operations drifted: ${JSON.stringify(receipt.universal_creation.operation_ids)}`);
+          if (receipt.universal_creation.repeat_verification !== 'PASS') throw new Error('composite repeat verification failed');
+          if (receipt.upstream_render.frame_sha256 === receipt.output.sha256) throw new Error('VFX composite did not change rendered frame bytes');
+          const base = parsePpmRgb8(await readFile('creative-render/build/vfx-frame/source.ppm'));
+          const effect = parsePpmRgb8(await readFile('creative-render/build/vfx-frame/electric.ppm'));
+          const out = parsePpmRgb8(await readFile('creative-render/build/vfx-frame/composited.ppm'));
+          if (base.width !== effect.width || base.width !== out.width || base.height !== effect.height || base.height !== out.height) throw new Error('VFX composite dimensions drifted');
+          console.log('vfx_frame_evidence=PASS');
+          console.log(`base_sha256=${receipt.upstream_render.frame_sha256}`);
+          console.log(`effect_sha256=${receipt.vfx_source.effect_raster_sha256}`);
+          console.log(`output_sha256=${receipt.output.sha256}`);
+          console.log(`flow_digest=${receipt.universal_creation.flow_digest}`);
+          NODE
+
+      - name: Upload VFX frame proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-frame-proof
+          path: creative-render/build/vfx-frame/
