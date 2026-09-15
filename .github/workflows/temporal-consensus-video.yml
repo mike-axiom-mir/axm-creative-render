@@ -118,17 +118,27 @@ jobs:
           if (o.hand_count !== 501 || o.recipe_count !== 508) throw new Error('pinned Universal Creation capability census drifted');
           if (o.repeat_verification !== 'PASS') throw new Error('consensus repeat gate failed');
           if (o.policy.regionCount !== 3) throw new Error('expected exactly three proof regions');
+          if (o.policy.consensus_rule !== 'component-median-with-axis-bounded-majority-inliers/v1') throw new Error('consensus rule drifted');
           if (o.region_selection?.regions?.length !== 3) throw new Error('region selection evidence is incomplete');
-          if (o.agreement_frame_count !== o.frame_count - 1) throw new Error('not all non-reference frames passed regional agreement');
+          if (o.agreement_frame_count !== o.frame_count - 1) throw new Error('not all non-reference frames passed majority-inlier agreement');
           if (!(o.nonzero_consensus_frame_count >= 1)) throw new Error('no non-zero consensus motion was observed');
           if (!(o.mean_improved_frame_count >= 1)) throw new Error('mean selected-region error never improved');
+          if (!Number.isSafeInteger(o.outlier_track_count) || o.outlier_track_count < 0) throw new Error('outlier evidence is invalid');
+          let countedOutliers = 0;
           for (const row of o.motion.slice(1)) {
             if (row.region_tracks.length !== 3) throw new Error('regional track evidence count drifted');
-            if (row.spread_dx > o.policy.maxAxisSpread || row.spread_dy > o.policy.maxAxisSpread) throw new Error('regional track disagreement escaped policy');
+            if (row.inlier_count < row.quorum) throw new Error('regional consensus lost strict-majority support');
+            if (row.inlier_indices.length !== row.inlier_count) throw new Error('inlier index count drifted');
+            if (row.inlier_indices.length + row.outlier_indices.length !== row.region_tracks.length) throw new Error('regional classification is incomplete');
+            countedOutliers += row.outlier_indices.length;
+            if (row.spread_dx > o.policy.maxAxisSpread * 2 || row.spread_dy > o.policy.maxAxisSpread * 2) throw new Error('inlier spread escaped median-deviation policy envelope');
             const representative = row.region_tracks[row.representative_region_index];
             if (!representative || representative.track_digest !== row.representative_track_digest) throw new Error('representative is not a real regional track receipt');
-            console.log(`consensus_${row.index}=median:${row.consensus_dx}/${row.consensus_dy},spread:${row.spread_dx}/${row.spread_dy},representative:${row.representative_region_index},mean:${row.pre_mean_region_mse}->${row.post_mean_region_mse}`);
+            if (representative.consensus_inlier !== true || !row.inlier_indices.includes(row.representative_region_index)) throw new Error('representative is not a consensus inlier');
+            console.log(`consensus_${row.index}=median:${row.consensus_dx}/${row.consensus_dy},raw-spread:${row.raw_spread_dx}/${row.raw_spread_dy},inlier-spread:${row.spread_dx}/${row.spread_dy},inliers:${row.inlier_indices.join(',')},outliers:${row.outlier_indices.join(',') || 'none'},representative:${row.representative_region_index},mean:${row.pre_mean_region_mse}->${row.post_mean_region_mse}`);
           }
+          if (countedOutliers !== o.outlier_track_count) throw new Error('aggregate outlier count drifted');
+          console.log(`outlier_track_count=${o.outlier_track_count}`);
           console.log('multi_region_consensus=PASS');
           NODE
 
@@ -229,11 +239,13 @@ jobs:
           if (e.fps !== 12 || e.duration_seconds !== 1) throw new Error('bounded timing drifted');
           if (e.universal_creation_hand_count !== 501 || e.universal_creation_recipe_count !== 508) throw new Error('pinned UC census drifted');
           if (e.agreement_frame_count !== 2 || !(e.nonzero_consensus_frame_count >= 1) || !(e.mean_improved_frame_count >= 1)) throw new Error('consensus proof lost required evidence');
+          if (!Number.isSafeInteger(e.outlier_track_count) || e.outlier_track_count < 0) throw new Error('combined evidence lost explicit outlier count');
           if (e.framestate_authority !== 'EVIDENCE_ADMISSION_ONLY') throw new Error('FrameState authority boundary drifted');
           if (!(e.video_bytes > 0)) throw new Error('consensus video is empty');
           console.log('temporal_consensus_video=PASS');
           console.log(`video_sha256=${e.video_sha256}`);
           console.log(`agreement_frame_count=${e.agreement_frame_count}`);
+          console.log(`outlier_track_count=${e.outlier_track_count}`);
           NODE
 
       - name: Upload complete temporal consensus video proof
