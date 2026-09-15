@@ -1,6 +1,6 @@
 {
   "name": "axm-creative-render",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "type": "module",
   "description": "Experimental creative operators and explicit donor bridges over renderer-consumable canonical state.",
@@ -11,6 +11,7 @@
     "temporal-snapshot": "node src/temporal_cli.mjs sample",
     "post-render": "node src/post_render_cli.mjs apply",
     "vfx-export": "node src/vfx_export_cli.mjs export",
+    "vfx-rasterize": "node src/vfx_rasterize_cli.mjs rasterize",
     "vfx-composite": "node src/vfx_composite_cli.mjs composite"
   },
   "engines": {
