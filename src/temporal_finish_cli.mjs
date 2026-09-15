@@ -30,7 +30,8 @@ try {
   const ucRoot = resolve(args["uc-root"]);
   const outDir = resolve(args["out-dir"]);
   const receiptPath = resolve(args.receipt);
-  const framePaths = String(args.frames).split(",").map((value) => resolve(value.trim())).filter(Boolean);
+  const declaredFrames = String(args.frames).split(",").map((value) => value.trim()).filter(Boolean);
+  const framePaths = declaredFrames.map((value) => resolve(value));
   if (pathIsInside(ucRoot, outDir) || pathIsInside(ucRoot, receiptPath)) {
     throw new Error("temporal finish outputs may not be written inside the Universal Creation donor repository");
   }
@@ -55,7 +56,7 @@ try {
     contract: "AXM_CREATIVE_TEMPORAL_FINISH_RECEIPT",
     version: 1,
     mode: "rendered-sequence-to-universal-creation-frame-finishing",
-    source_frames: framePaths.map((path, index) => ({ index, path, sha256: sha256(frameBytes[index]), bytes: frameBytes[index].length })),
+    source_frames: declaredFrames.map((declaredPath, index) => ({ index, declared_path: declaredPath, sha256: sha256(frameBytes[index]), bytes: frameBytes[index].length })),
     outputs,
     observation: result.observation,
     truth_boundary: result.observation.truth_boundary,
