@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 
 import { observeUniversalCreationTemporal, normalizeSampleTimes } from "./temporal_uc_bridge.mjs";
 import { sha256 } from "./creative_scene_operator.mjs";
@@ -31,9 +31,31 @@ function parseTimes(value) {
   return normalizeSampleTimes(String(value).split(",").map((part) => Number(part.trim())));
 }
 
+function pathInside(path, root) {
+  const rel = relative(root, path);
+  return rel === "" || (!rel.startsWith("..") && !resolve(rel).startsWith("/"));
+}
+
 async function write(path, bytes) {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, bytes, { flag: "w" });
+}
+
+function requestBytes(sceneFile, outputFile) {
+  return Buffer.from(
+    [
+      "# AXM Creative Render temporal sample.",
+      "AXM_RENDER_REQUEST 1",
+      `scene ${sceneFile}`,
+      "backend axm.native.cpu.reference",
+      "width 320",
+      "height 180",
+      "format ppm-rgb8",
+      `output ${outputFile}`,
+      "",
+    ].join("\n"),
+    "utf8",
+  );
 }
 
 try {
@@ -43,8 +65,8 @@ try {
   const receiptPath = resolve(args.receipt);
   const times = parseTimes(args.times);
 
-  if (receiptPath === outDir || receiptPath.startsWith(`${outDir}/`)) {
-    // Receipt inside the output directory is fine; this guard only documents the intended relationship.
+  if (pathInside(outDir, ucRoot) || pathInside(receiptPath, ucRoot)) {
+    throw new Error("temporal proof outputs may not be written inside the Universal Creation donor repository");
   }
 
   const first = await observeUniversalCreationTemporal(ucRoot, times);
@@ -63,10 +85,24 @@ try {
   const outputs = [];
   for (let i = 0; i < first.samples.length; i += 1) {
     const sample = first.samples[i];
-    const filename = `frame-${String(i).padStart(3, "0")}.axmscene`;
-    const path = join(outDir, filename);
-    await write(path, sample.scene_bytes);
-    outputs.push({ index: i, time: sample.time, file: filename, sha256: sample.scene_sha256 });
+    const stem = `frame-${String(i).padStart(3, "0")}`;
+    const sceneFile = `${stem}.axmscene`;
+    const requestFile = `${stem}.axmrender`;
+    const outputFile = `${stem}.ppm`;
+    const renderReceiptFile = `${stem}.axmreceipt`;
+    const renderRequestBytes = requestBytes(sceneFile, outputFile);
+    await write(join(outDir, sceneFile), sample.scene_bytes);
+    await write(join(outDir, requestFile), renderRequestBytes);
+    outputs.push({
+      index: i,
+      time: sample.time,
+      scene_file: sceneFile,
+      scene_sha256: sample.scene_sha256,
+      request_file: requestFile,
+      request_sha256: sha256(renderRequestBytes),
+      output_file: outputFile,
+      render_receipt_file: renderReceiptFile,
+    });
   }
 
   const receipt = {
@@ -86,7 +122,7 @@ try {
   console.log(`recipe_count=${receipt.observation.recipe_count}`);
   console.log(`sample_count=${receipt.observation.sample_count}`);
   console.log(`distinct_scene_count=${receipt.observation.distinct_scene_count}`);
-  for (const output of outputs) console.log(`frame_${output.index}_sha256=${output.sha256}`);
+  for (const output of outputs) console.log(`frame_${output.index}_scene_sha256=${output.scene_sha256}`);
   console.log(`receipt_sha256=${sha256(receiptBytes)}`);
 } catch (error) {
   usage();
