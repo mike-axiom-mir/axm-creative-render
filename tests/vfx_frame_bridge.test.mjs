@@ -5,8 +5,17 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 
-import { executeElectricEffect, compositeElectricRasterWithUniversalCreation } from "../src/vfx_frame_bridge.mjs";
-import { ppmToPrecisionRaster, precisionRasterToPpm, serializePpmRgb8 } from "../src/post_render_bridge.mjs";
+import {
+  executeElectricEffect,
+  rasterizeElectricStateToPpm,
+  compositeElectricRasterWithUniversalCreation,
+} from "../src/vfx_frame_bridge.mjs";
+import {
+  parsePpmRgb8,
+  ppmToPrecisionRaster,
+  precisionRasterToPpm,
+  serializePpmRgb8,
+} from "../src/post_render_bridge.mjs";
 
 function canonical(value){if(value===null||typeof value!=="object")return JSON.stringify(value);if(Array.isArray(value))return `[${value.map(canonical).join(",")}]`;return `{${Object.keys(value).sort().map((key)=>`${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;}
 function digest(value){return createHash("sha256").update(canonical(value),"utf8").digest("hex");}
@@ -14,7 +23,7 @@ function digest(value){return createHash("sha256").update(canonical(value),"utf8
 async function makeVfxFixture(root){
   const dir=join(root,"hand-lab","src");await mkdir(dir,{recursive:true});
   await writeFile(join(dir,"hand-runtime.mjs"),`import {createHash} from 'node:crypto';\nconst clone=v=>JSON.parse(JSON.stringify(v));\nexport function createHandRegistry(hands){return new Map(hands.map(h=>[h.id,h]));}\nexport function executeHandGraph({registry,graph,initialState}){let state=clone(initialState);const ids=[];for(const stage of graph.stages){state=registry.get(stage.hand).execute(state,stage.params||{}).state;ids.push(stage.id)}const finalStateHash=createHash('sha256').update(JSON.stringify(state)).digest('hex');return {graph:{id:graph.id,version:graph.version},finalState:state,finalStateHash,executedStageIds:ids};}\n`);
-  await writeFile(join(dir,"electric-hands.mjs"),`const hand={schema:'axm.hand/v0.1',id:'fx.fixture.svg',version:'0.1.0',execute(state){const next=structuredClone(state);next.paths=[{id:'trunk',points:[{x:.1,y:.5},{x:.9,y:.4}]}];next.realizations={svgPreview:{mediaType:'image/svg+xml',derivedFromTopologyHash:'fixture-topology',content:'<svg xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="#05060b"/><path d="M0 0 L10 10" stroke="white"/></svg>'}};return {state:next};}};\nexport const ELECTRIC_HANDS=[hand];\nexport const ELECTRIC_STORM_GRAPH={schema:'axm.hand-graph/v0.1',id:'fx.electric-storm-fixture',version:'0.1.0',stages:[{id:'preview',hand:'fx.fixture.svg',params:{}}]};\nexport function makeElectricInitialState(seed){return {effect:{seed},paths:[],realizations:{}};}\n`);
+  await writeFile(join(dir,"electric-hands.mjs"),`const hand={schema:'axm.hand/v0.1',id:'fx.fixture.svg',version:'0.1.0',execute(state){const next=structuredClone(state);next.paths=[{id:'trunk',role:'trunk',energy:1,width:1,points:[{x:.1,y:.5},{x:.9,y:.4}]}];next.realizations={svgPreview:{mediaType:'image/svg+xml',derivedFromTopologyHash:'fixture-topology',content:'<svg xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="#05060b"/><path d="M0 0 L10 10" stroke="white"/></svg>'}};return {state:next};}};\nexport const ELECTRIC_HANDS=[hand];\nexport const ELECTRIC_STORM_GRAPH={schema:'axm.hand-graph/v0.1',id:'fx.electric-storm-fixture',version:'0.1.0',stages:[{id:'preview',hand:'fx.fixture.svg',params:{}}]};\nexport function makeElectricInitialState(seed){return {schema:'axm.effect-work-state/v0.1',effect:{seed},paths:[],realizations:{}};}\n`);
 }
 
 async function makeUcFixture(root){
@@ -38,6 +47,22 @@ test("Visual Effect Fabric electric graph yields repeatable SVG source evidence"
   assert.equal(first.observation.svg_sha256,second.observation.svg_sha256);
   assert.equal(first.svgBytes.equals(second.svgBytes),true);
   assert.match(first.svgBytes.toString("utf8"),/<svg/);
+});
+
+test("canonical electric path state rasterizes deterministically without external tools",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"axm-cr-vfx-raster-"));await makeVfxFixture(root);
+  const source=await executeElectricEffect(root,42);
+  const first=rasterizeElectricStateToPpm(source.stateBytes,64,36);
+  const second=rasterizeElectricStateToPpm(source.stateBytes,64,36);
+  assert.equal(first.evidence.schema,"axm.creative-render.electric-path-raster/v1");
+  assert.equal(first.evidence.path_count,1);
+  assert.equal(first.evidence.segment_count,1);
+  assert.equal(first.ppmBytes.equals(second.ppmBytes),true);
+  const ppm=parsePpmRgb8(first.ppmBytes);
+  assert.equal(ppm.width,64);assert.equal(ppm.height,36);
+  assert(ppm.rgb.some((value)=>value>0));
+  const bad=Buffer.from(JSON.stringify({schema:'axm.effect-work-state/v0.1',paths:[{points:[{x:0,y:0},{x:2,y:1}]}]}));
+  assert.throws(()=>rasterizeElectricStateToPpm(bad,64,36),/0..1/);
 });
 
 test("Universal Creation Creative Flow screen-composites effect raster over base frame",async()=>{
