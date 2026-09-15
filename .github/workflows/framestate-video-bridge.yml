@@ -1,0 +1,217 @@
+name: framestate-video-bridge
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: framestate-video-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-framestate-video:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned Universal Creation donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-universal-creation
+          ref: 30d62f80c84732dbeebd1e58984525b3f8ec1d60
+          path: universal-creation
+
+      - name: Checkout pinned Render Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Checkout pinned FrameState donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-framestate
+          ref: 41c9c6827e64613b523b28536ab864dddf046d93
+          path: framestate
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Use Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install explicit FFmpeg video assembly boundary for CI proof
+        run: |
+          set -euo pipefail
+          mkdir -p creative-render/build
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          {
+            echo "resolved_executable=$(readlink -f "$(command -v ffmpeg)")"
+            echo "package_version=$(dpkg-query -W -f='${Version}' ffmpeg)"
+            ffmpeg -version | head -n 1
+          } | tee creative-render/build/framestate-ffmpeg-environment.txt
+          test -s creative-render/build/framestate-ffmpeg-environment.txt
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Sample Universal Creation animation into three renderer requests
+        run: |
+          node creative-render/src/temporal_cli.mjs sample \
+            --uc-root universal-creation \
+            --out-dir creative-render/build/framestate-source \
+            --receipt creative-render/build/framestate-source/temporal.receipt.json \
+            --times 0,1,2
+
+      - name: Build Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and verify temporal source 000
+        run: |
+          render-fabric/build/axm-render --request creative-render/build/framestate-source/frame-000.axmrender --receipt creative-render/build/framestate-source/frame-000.axmreceipt
+          render-fabric/build/axm-render-verify-receipt creative-render/build/framestate-source/frame-000.axmrender creative-render/build/framestate-source/frame-000.axmreceipt
+
+      - name: Render and verify temporal source 001
+        run: |
+          render-fabric/build/axm-render --request creative-render/build/framestate-source/frame-001.axmrender --receipt creative-render/build/framestate-source/frame-001.axmreceipt
+          render-fabric/build/axm-render-verify-receipt creative-render/build/framestate-source/frame-001.axmrender creative-render/build/framestate-source/frame-001.axmreceipt
+
+      - name: Render and verify temporal source 002
+        run: |
+          render-fabric/build/axm-render --request creative-render/build/framestate-source/frame-002.axmrender --receipt creative-render/build/framestate-source/frame-002.axmreceipt
+          render-fabric/build/axm-render-verify-receipt creative-render/build/framestate-source/frame-002.axmrender creative-render/build/framestate-source/frame-002.axmreceipt
+
+      - name: Build canonical FrameState project from exact rendered PPMs
+        run: |
+          node creative-render/src/framestate_bridge_cli.mjs build \
+            --machine-root . \
+            --frames creative-render/build/framestate-source/frame-000.ppm,creative-render/build/framestate-source/frame-001.ppm,creative-render/build/framestate-source/frame-002.ppm \
+            --project creative-render/build/framestate-project.json \
+            --receipt creative-render/build/framestate-project.receipt.json \
+            --fps 12 \
+            --hold-frames 4 \
+            --project-id axm-creative-render-video-proof
+
+      - name: FrameState canonical admission
+        run: |
+          PYTHONPATH=framestate/src python -m axm_framestate inspect creative-render/build/framestate-project.json > creative-render/build/framestate-inspect.json
+
+      - name: Render and assemble FrameState video
+        run: |
+          set +e
+          PYTHONPATH=framestate/src python -m axm_framestate render \
+            creative-render/build/framestate-project.json \
+            creative-render/build/framestate-render \
+            --profile fast \
+            > creative-render/build/framestate-render-output.json \
+            2> creative-render/build/framestate-render-stderr.txt
+          rc=$?
+          set -e
+          echo "$rc" > creative-render/build/framestate-render-returncode.txt
+          {
+            echo "returncode=$rc"
+            echo "--- stderr ---"
+            cat creative-render/build/framestate-render-stderr.txt || true
+            echo "--- stdout ---"
+            cat creative-render/build/framestate-render-output.json || true
+            echo "--- produced files ---"
+            find creative-render/build/framestate-render -maxdepth 3 -type f -printf '%P %s bytes\n' 2>/dev/null | sort || true
+          } | tee creative-render/build/framestate-render-diagnostic.txt
+          if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+          test -s creative-render/build/framestate-render/video.mp4
+          test -s creative-render/build/framestate-render/render-receipt.json
+
+      - name: Upload FrameState render diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-framestate-render-failure
+          if-no-files-found: warn
+          path: |
+            creative-render/build/framestate-project.json
+            creative-render/build/framestate-project.receipt.json
+            creative-render/build/framestate-inspect.json
+            creative-render/build/framestate-ffmpeg-environment.txt
+            creative-render/build/framestate-render-output.json
+            creative-render/build/framestate-render-stderr.txt
+            creative-render/build/framestate-render-returncode.txt
+            creative-render/build/framestate-render-diagnostic.txt
+            creative-render/build/framestate-render/
+
+      - name: FrameState deterministic repeat verification
+        run: |
+          PYTHONPATH=framestate/src python -m axm_framestate verify-repeat \
+            creative-render/build/framestate-project.json \
+            creative-render/build/framestate-repeat > creative-render/build/framestate-repeat.json
+
+      - name: FrameState read-only caller-pinned render verification
+        run: |
+          receipt_digest="$(python -c "import json; print(json.load(open('creative-render/build/framestate-render/render-receipt.json'))['receipt_digest'])")"
+          project_digest="$(python -c "import json; print(json.load(open('creative-render/build/framestate-render/render-receipt.json'))['project_digest'])")"
+          PYTHONPATH=framestate/src python -m axm_framestate verify-render \
+            creative-render/build/framestate-render \
+            --receipt-digest "$receipt_digest" \
+            --project-digest "$project_digest" > creative-render/build/framestate-verify-render.json
+
+      - name: Bind FrameState video evidence back to Creative Render
+        run: |
+          node creative-render/src/framestate_video_verify.mjs \
+            --bridge-receipt creative-render/build/framestate-project.receipt.json \
+            --project creative-render/build/framestate-project.json \
+            --render-receipt creative-render/build/framestate-render/render-receipt.json \
+            --repeat creative-render/build/framestate-repeat.json \
+            --verify-render creative-render/build/framestate-verify-render.json \
+            --video creative-render/build/framestate-render/video.mp4 \
+            --ffmpeg-evidence creative-render/build/framestate-ffmpeg-environment.txt \
+            --out creative-render/build/framestate-video-evidence.json
+
+      - name: Assert bounded video result
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          const evidence = JSON.parse(await readFile('creative-render/build/framestate-video-evidence.json','utf8'));
+          if (evidence.contract !== 'AXM_CREATIVE_FRAMESTATE_VIDEO_EVIDENCE' || evidence.version !== 1) throw new Error('video evidence contract drifted');
+          if (evidence.source_frame_count !== 3) throw new Error('expected three sparse source frames');
+          if (evidence.realized_frame_count !== 12) throw new Error(`expected 12 realized frames, got ${evidence.realized_frame_count}`);
+          if (evidence.fps !== 12 || evidence.duration_seconds !== 1) throw new Error('bounded video timing drifted');
+          if (evidence.framestate_repeat_passed !== true) throw new Error('FrameState repeat gate failed');
+          if (evidence.framestate_authority !== 'EVIDENCE_ADMISSION_ONLY') throw new Error('FrameState authority boundary drifted');
+          if (!(evidence.video_bytes > 0)) throw new Error('video is empty');
+          if (!evidence.ffmpeg_boundary?.environment_sha256) throw new Error('FFmpeg environment evidence is missing');
+          console.log('framestate_video_bridge=PASS');
+          console.log(`video_sha256=${evidence.video_sha256}`);
+          console.log(`video_bytes=${evidence.video_bytes}`);
+          console.log(`ffmpeg_environment_sha256=${evidence.ffmpeg_boundary.environment_sha256}`);
+          console.log(`verification_digest=${evidence.framestate_render_output_verification_digest}`);
+          NODE
+
+      - name: Upload complete FrameState video proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-framestate-video-proof
+          path: |
+            creative-render/build/framestate-source/
+            creative-render/build/framestate-project.json
+            creative-render/build/framestate-project.receipt.json
+            creative-render/build/framestate-inspect.json
+            creative-render/build/framestate-ffmpeg-environment.txt
+            creative-render/build/framestate-render/
+            creative-render/build/framestate-repeat.json
+            creative-render/build/framestate-verify-render.json
+            creative-render/build/framestate-video-evidence.json

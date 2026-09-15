@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { observeUniversalCreationTemporal, normalizeSampleTimes } from "./temporal_uc_bridge.mjs";
 import { sha256 } from "./creative_scene_operator.mjs";
+import { pathIsInside } from "./path_safety.mjs";
 
 function usage() {
   console.error("usage: node src/temporal_cli.mjs sample --uc-root PATH --out-dir PATH --receipt PATH [--times 0,1,2]");
@@ -29,11 +30,6 @@ function parseArgs(argv) {
 function parseTimes(value) {
   if (value == null) return [0, 1, 2];
   return normalizeSampleTimes(String(value).split(",").map((part) => Number(part.trim())));
-}
-
-function pathInside(path, root) {
-  const rel = relative(root, path);
-  return rel === "" || (!rel.startsWith("..") && !resolve(rel).startsWith("/"));
 }
 
 async function write(path, bytes) {
@@ -65,7 +61,7 @@ try {
   const receiptPath = resolve(args.receipt);
   const times = parseTimes(args.times);
 
-  if (pathInside(outDir, ucRoot) || pathInside(receiptPath, ucRoot)) {
+  if (pathIsInside(ucRoot, outDir) || pathIsInside(ucRoot, receiptPath)) {
     throw new Error("temporal proof outputs may not be written inside the Universal Creation donor repository");
   }
 

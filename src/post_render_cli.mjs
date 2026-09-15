@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, relative, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 
 import { applyUniversalCreationToRenderedPpm } from "./post_render_bridge.mjs";
 import { sha256 } from "./creative_scene_operator.mjs";
+import { pathIsInside } from "./path_safety.mjs";
 
 function usage() {
   console.error("usage: node src/post_render_cli.mjs apply --uc-root PATH --input INPUT.ppm --output OUTPUT.ppm --receipt RECEIPT.json --render-request REQUEST.axmrender --render-receipt RECEIPT.axmreceipt");
@@ -26,11 +27,6 @@ function parseArgs(argv) {
   return values;
 }
 
-function inside(path, root) {
-  const rel = relative(root, path);
-  return rel === "" || (!rel.startsWith("..") && !resolve(rel).startsWith("/"));
-}
-
 async function write(path, bytes) {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, bytes, { flag: "w" });
@@ -48,7 +44,7 @@ try {
   const outputPaths = [outputPath, receiptPath];
   if (new Set(outputPaths).size !== outputPaths.length) throw new Error("post-render output and receipt paths must differ");
   if (outputPath === inputPath || receiptPath === inputPath) throw new Error("post-render proof refuses to overwrite the renderer output");
-  for (const path of outputPaths) if (inside(path, ucRoot)) throw new Error("post-render proof outputs may not be written inside the Universal Creation donor repository");
+  for (const path of outputPaths) if (pathIsInside(ucRoot, path)) throw new Error("post-render proof outputs may not be written inside the Universal Creation donor repository");
 
   const [inputPpm, renderRequestBytes, renderReceiptBytes] = await Promise.all([
     readFile(inputPath),
