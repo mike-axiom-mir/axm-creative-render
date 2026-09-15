@@ -30,7 +30,7 @@ module.exports={creativeHands:{version:'fixture-hands',audit(){return {total:501
 `);
 }
 
-function frame(seed){const rgb=Buffer.alloc(4*2*3);for(let i=0;i<rgb.length;i++)rgb[i]=(seed+i*11)%180+20;return serializePpmRgb8(4,2,rgb);}
+function frame(seed){const width=16,height=8,rgb=Buffer.alloc(width*height*3);for(let i=0;i<rgb.length;i++)rgb[i]=(seed+i*11)%180+20;return serializePpmRgb8(width,height,rgb);}
 
 test("temporal VFX uses explicit per-frame effect state and repeats complete composites",async()=>{
   const root=await mkdtemp(join(tmpdir(),"axm-cr-temporal-vfx-"));
