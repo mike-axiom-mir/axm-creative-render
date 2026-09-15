@@ -19,7 +19,9 @@
     "temporal-finish": "node src/temporal_finish_cli.mjs apply",
     "temporal-motion": "node src/temporal_motion_cli.mjs apply",
     "temporal-consensus": "node src/temporal_consensus_cli.mjs apply",
-    "translation-control": "node src/temporal_translation_control_cli.mjs build"
+    "translation-control": "node src/temporal_translation_control_cli.mjs build",
+    "temporal-vfx": "node src/temporal_vfx_cli.mjs apply",
+    "temporal-vfx-video-verify": "node src/temporal_vfx_video_verify.mjs"
   },
   "engines": {
     "node": ">=20"
