@@ -76,21 +76,26 @@ The integration workflow then uses FrameState itself for four distinct observati
 - repeat verification passes;
 - read-only verification reports `verified: true` and `authority: EVIDENCE_ADMISSION_ONLY`;
 - the caller-pinned FrameState receipt/project digests match the same render receipt;
-- the verified frame count matches the Creative Render project's declared duration.
+- the verified frame count matches the Creative Render project's declared duration;
+- the exact CI FFmpeg environment evidence file exists, names the resolved executable and package version, and is SHA-256-bound into the final Creative Render evidence.
 
 ## FFmpeg boundary
 
 FrameState explicitly treats container assembly as an external FFmpeg boundary. v0.6 preserves that wording.
 
-A green proof establishes that the exercised runner successfully produced one MP4 and binds its exact bytes. It does **not** claim the MP4 is bit-identical across different FFmpeg versions, operating systems or machines.
+The first exact-head v0.6 workflow run exposed that the Ubuntu 24.04.5 GitHub runner did **not** have `ffmpeg` on `PATH`: `command -v ffmpeg` returned exit code 1. The workflow stopped before Creative Render tests, temporal sampling, FrameState rendering or MP4 assembly. That failed run remains visible evidence rather than being rewritten as success.
+
+The repaired proof installs Debian/Ubuntu's `ffmpeg` package **explicitly inside the GitHub Actions proof runner** using `apt-get`, records the resolved executable path, installed package version and FFmpeg version line, and binds that text file into `AXM_CREATIVE_FRAMESTATE_VIDEO_EVIDENCE 1`.
+
+This does not make FFmpeg part of Creative Render's native/runtime dependency set. It is an explicit CI-only realization of the external assembly boundary that FrameState already declares. A green proof establishes that this exercised runner successfully produced one MP4 and binds its exact bytes. It does **not** claim the MP4 is bit-identical across different FFmpeg versions, operating systems or machines.
 
 ## Four-root gate
 
-**Truth** — sparse source samples, FrameState project state, deterministic FrameState frame rendering, read-only evidence verification and external MP4 encoding are separate claims.
+**Truth** — sparse source samples, FrameState project state, deterministic FrameState frame rendering, read-only evidence verification and external MP4 encoding are separate claims. The absent-runner-tool failure is retained.
 
-**Agency / non-domination** — Creative Render chooses explicit source frames and hold durations; FrameState receives no authority over upstream creative state, and its verifier returns evidence-only authority.
+**Agency / non-domination** — Creative Render chooses explicit source frames and hold durations; FrameState receives no authority over upstream creative state, and its verifier returns evidence-only authority. The optional encoder is installed only for the isolated CI proof.
 
-**Continuity** — original Render Fabric frames stay intact; exact source hashes, project bytes, FrameState receipts/manifests, repeat evidence, verification evidence and MP4 bytes stay separately bound.
+**Continuity** — original Render Fabric frames stay intact; exact source hashes, project bytes, FrameState receipts/manifests, repeat evidence, verification evidence, FFmpeg environment evidence and MP4 bytes stay separately bound.
 
 **Wisdom before speed** — three sparse frames and one one-second video prove the handoff before attempting continuous rig transfer, video interpolation or a universal temporal protocol.
 
@@ -101,6 +106,7 @@ A green proof establishes that the exercised runner successfully produced one MP
 - a shared temporal ontology between UC and FrameState;
 - cinematic or artistic quality;
 - bit-identical MP4 encoding across machines;
+- that FFmpeg is bundled with or required by Creative Render outside the explicit video-assembly proof;
 - live video streaming;
 - temporal Visual Effect Fabric animation across the sequence;
 - game-world recording or machinima capture;
