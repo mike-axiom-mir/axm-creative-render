@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, relative, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 
 import { compositeElectricRasterWithUniversalCreation } from "./vfx_frame_bridge.mjs";
 import { sha256 } from "./creative_scene_operator.mjs";
+import { pathIsInside } from "./path_safety.mjs";
 
 function parseArgs(argv) {
   if (argv[0] !== "composite") throw new Error("only the 'composite' command is supported");
@@ -21,10 +22,6 @@ function parseArgs(argv) {
   return values;
 }
 
-function inside(path, root) {
-  const rel = relative(root, path);
-  return rel === "" || (!rel.startsWith("..") && !resolve(rel).startsWith("/"));
-}
 async function write(path, bytes) { await mkdir(dirname(path), { recursive: true }); await writeFile(path, bytes, { flag: "w" }); }
 
 try {
@@ -34,7 +31,7 @@ try {
   const receiptPath = resolve(args.receipt);
   const basePath = resolve(args.base);
   if (outputPath === basePath || receiptPath === basePath || outputPath === receiptPath) throw new Error("VFX composite refuses to overwrite the source frame or collide output paths");
-  if (inside(outputPath, ucRoot) || inside(receiptPath, ucRoot)) throw new Error("VFX composite outputs may not be written inside the Universal Creation donor repository");
+  if (pathIsInside(ucRoot, outputPath) || pathIsInside(ucRoot, receiptPath)) throw new Error("VFX composite outputs may not be written inside the Universal Creation donor repository");
 
   const [baseBytes, effectBytes, renderRequest, renderReceipt, vfxReceiptBytes, vfxSvg, vfxRasterReceiptBytes] = await Promise.all([
     readFile(basePath),
@@ -50,15 +47,9 @@ try {
   if (vfxReceipt.outputs?.svg?.sha256 !== sha256(vfxSvg)) throw new Error("VFX SVG bytes do not match their source receipt");
 
   const vfxRasterReceipt = JSON.parse(vfxRasterReceiptBytes.toString("utf8"));
-  if (vfxRasterReceipt.contract !== "AXM_CREATIVE_VFX_RASTER_RECEIPT" || vfxRasterReceipt.version !== 1) {
-    throw new Error("unsupported VFX raster receipt");
-  }
-  if (vfxRasterReceipt.source?.vfx_source_receipt_sha256 !== sha256(vfxReceiptBytes)) {
-    throw new Error("VFX raster receipt is not bound to the supplied VFX source receipt");
-  }
-  if (vfxRasterReceipt.output?.sha256 !== sha256(effectBytes)) {
-    throw new Error("effect PPM bytes do not match their VFX raster receipt");
-  }
+  if (vfxRasterReceipt.contract !== "AXM_CREATIVE_VFX_RASTER_RECEIPT" || vfxRasterReceipt.version !== 1) throw new Error("unsupported VFX raster receipt");
+  if (vfxRasterReceipt.source?.vfx_source_receipt_sha256 !== sha256(vfxReceiptBytes)) throw new Error("VFX raster receipt is not bound to the supplied VFX source receipt");
+  if (vfxRasterReceipt.output?.sha256 !== sha256(effectBytes)) throw new Error("effect PPM bytes do not match their VFX raster receipt");
 
   const result = await compositeElectricRasterWithUniversalCreation(ucRoot, baseBytes, effectBytes);
   await write(outputPath, result.outputPpm);
@@ -66,12 +57,7 @@ try {
     contract: "AXM_CREATIVE_VFX_COMPOSITE_RECEIPT",
     version: 1,
     mode: "vfx-state-raster-to-universal-creation-screen-composite",
-    upstream_render: {
-      verification: "external-required",
-      request_sha256: sha256(renderRequest),
-      receipt_sha256: sha256(renderReceipt),
-      frame_sha256: sha256(baseBytes),
-    },
+    upstream_render: { verification: "external-required", request_sha256: sha256(renderRequest), receipt_sha256: sha256(renderReceipt), frame_sha256: sha256(baseBytes) },
     vfx_source: {
       receipt_sha256: sha256(vfxReceiptBytes),
       graph_id: vfxReceipt.visual_effect_fabric?.graph_id ?? null,
