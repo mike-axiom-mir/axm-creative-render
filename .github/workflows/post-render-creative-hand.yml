@@ -1,0 +1,90 @@
+name: post-render-creative-hand
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: post-render-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-post-render:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned Universal Creation donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-universal-creation
+          ref: 30d62f80c84732dbeebd1e58984525b3f8ec1d60
+          path: universal-creation
+
+      - name: Checkout pinned Render Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Build Render Fabric
+        run: cmake -S render-fabric -B render-fabric/build && cmake --build render-fabric/build --config Release && ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Prepare renderer request
+        run: |
+          mkdir -p creative-render/build/post-render
+          cp creative-render/examples/reference.axmscene creative-render/build/post-render/source.axmscene
+          printf '%s\n' '# AXM Creative Render post-render proof.' 'AXM_RENDER_REQUEST 1' 'scene source.axmscene' 'backend axm.native.cpu.reference' 'width 320' 'height 180' 'format ppm-rgb8' 'output source.ppm' > creative-render/build/post-render/source.axmrender
+
+      - name: Render source frame
+        run: render-fabric/build/axm-render --request creative-render/build/post-render/source.axmrender --receipt creative-render/build/post-render/source.axmreceipt
+
+      - name: Replay-verify source frame
+        run: render-fabric/build/axm-render-verify-receipt creative-render/build/post-render/source.axmrender creative-render/build/post-render/source.axmreceipt
+
+      - name: Apply real Universal Creation Hands to rendered pixels
+        run: node creative-render/src/post_render_cli.mjs apply --uc-root universal-creation --input creative-render/build/post-render/source.ppm --output creative-render/build/post-render/styled.ppm --receipt creative-render/build/post-render/post-render.receipt.json --render-request creative-render/build/post-render/source.axmrender --render-receipt creative-render/build/post-render/source.axmreceipt
+
+      - name: Assert post-render evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { parsePpmRgb8 } from './creative-render/src/post_render_bridge.mjs';
+          const receipt = JSON.parse(await readFile('creative-render/build/post-render/post-render.receipt.json', 'utf8'));
+          if (receipt.contract !== 'AXM_CREATIVE_POST_RENDER_RECEIPT' || receipt.version !== 1) throw new Error('post-render receipt contract drifted');
+          if (receipt.universal_creation.hand_count !== 441) throw new Error(`expected 441 UC hands, got ${receipt.universal_creation.hand_count}`);
+          if (receipt.universal_creation.recipe_count !== 448) throw new Error(`expected 448 UC recipes, got ${receipt.universal_creation.recipe_count}`);
+          const expected = ['creative.adjust.tint','creative.adjust.contrast'];
+          if (JSON.stringify(receipt.universal_creation.operation_ids) !== JSON.stringify(expected)) throw new Error(`post-render operations drifted: ${JSON.stringify(receipt.universal_creation.operation_ids)}`);
+          if (receipt.universal_creation.repeat_verification !== 'PASS') throw new Error('repeat verification did not pass');
+          if (receipt.upstream.renderer_output_sha256 === receipt.output.sha256) throw new Error('creative Hands did not change rendered frame bytes');
+          const source = parsePpmRgb8(await readFile('creative-render/build/post-render/source.ppm'));
+          const styled = parsePpmRgb8(await readFile('creative-render/build/post-render/styled.ppm'));
+          if (source.width !== styled.width || source.height !== styled.height) throw new Error('post-render operation changed frame dimensions');
+          console.log('post_render_contracts=PASS');
+          console.log(`source_ppm_sha256=${receipt.upstream.renderer_output_sha256}`);
+          console.log(`styled_ppm_sha256=${receipt.output.sha256}`);
+          console.log(`flow_digest=${receipt.universal_creation.flow_digest}`);
+          NODE
+
+      - name: Upload post-render proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-post-render-proof
+          path: creative-render/build/post-render/
