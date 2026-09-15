@@ -1,0 +1,77 @@
+name: temporal-render-bridge
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: temporal-render-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-temporal-render:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned Universal Creation donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-universal-creation
+          ref: 30d62f80c84732dbeebd1e58984525b3f8ec1d60
+          path: universal-creation
+
+      - name: Checkout pinned Render Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Sample Universal Creation animation
+        run: node creative-render/src/temporal_cli.mjs sample --uc-root universal-creation --out-dir creative-render/build/temporal --receipt creative-render/build/temporal/temporal.receipt.json --times 0,1,2
+
+      - name: Build Render Fabric
+        run: cmake -S render-fabric -B render-fabric/build && cmake --build render-fabric/build --config Release && ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render frame 000
+        run: render-fabric/build/axm-render --request creative-render/build/temporal/frame-000.axmrender --receipt creative-render/build/temporal/frame-000.axmreceipt
+
+      - name: Verify frame 000 receipt
+        run: render-fabric/build/axm-render-verify-receipt creative-render/build/temporal/frame-000.axmrender creative-render/build/temporal/frame-000.axmreceipt
+
+      - name: Render frame 001
+        run: render-fabric/build/axm-render --request creative-render/build/temporal/frame-001.axmrender --receipt creative-render/build/temporal/frame-001.axmreceipt
+
+      - name: Verify frame 001 receipt
+        run: render-fabric/build/axm-render-verify-receipt creative-render/build/temporal/frame-001.axmrender creative-render/build/temporal/frame-001.axmreceipt
+
+      - name: Render frame 002
+        run: render-fabric/build/axm-render --request creative-render/build/temporal/frame-002.axmrender --receipt creative-render/build/temporal/frame-002.axmreceipt
+
+      - name: Verify frame 002 receipt
+        run: render-fabric/build/axm-render-verify-receipt creative-render/build/temporal/frame-002.axmrender creative-render/build/temporal/frame-002.axmreceipt
+
+      - name: Verify complete temporal evidence set
+        run: node creative-render/src/temporal_render_verify.mjs --dir creative-render/build/temporal --temporal-receipt creative-render/build/temporal/temporal.receipt.json --out creative-render/build/temporal/temporal-render-evidence.json
+
+      - name: Upload temporal proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-temporal-proof
+          path: creative-render/build/temporal/
