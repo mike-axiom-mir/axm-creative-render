@@ -42,16 +42,36 @@ try {
   const observation = consensus.observation;
   if (observation?.repeat_verification !== "PASS") throw new Error("temporal consensus repeat verification did not pass");
   if (!(observation?.policy?.regionCount >= 3) || observation.policy.regionCount % 2 === 0) throw new Error("temporal consensus region count is invalid");
-  if (observation.agreement_frame_count !== observation.frame_count - 1) throw new Error("not every non-reference frame passed the consensus agreement gate");
+  if (observation.policy.consensus_rule !== "component-median-with-axis-bounded-majority-inliers/v1") throw new Error("temporal consensus rule drifted");
+  if (observation.agreement_frame_count !== observation.frame_count - 1) throw new Error("not every non-reference frame passed the majority-inlier consensus gate");
   if (!(observation.nonzero_consensus_frame_count >= 1)) throw new Error("temporal consensus proof has no non-zero motion consensus");
   if (!(observation.mean_improved_frame_count >= 1)) throw new Error("temporal consensus proof has no frame whose mean selected-region MSE improved");
+  if (!Number.isSafeInteger(observation.outlier_track_count) || observation.outlier_track_count < 0) throw new Error("temporal consensus outlier evidence is invalid");
+
+  let countedOutliers = 0;
   for (const row of observation.motion?.slice(1) ?? []) {
     if (row.agreement !== true) throw new Error(`frame ${row.index} lost consensus agreement`);
+    if (!Number.isSafeInteger(row.quorum) || !Number.isSafeInteger(row.inlier_count) || row.inlier_count < row.quorum) throw new Error(`frame ${row.index} lacks strict-majority inlier support`);
+    if (!Array.isArray(row.inlier_indices) || !Array.isArray(row.outlier_indices)) throw new Error(`frame ${row.index} lacks explicit inlier/outlier indices`);
     if (!Array.isArray(row.region_tracks) || row.region_tracks.length !== observation.policy.regionCount) throw new Error(`frame ${row.index} has incomplete regional track evidence`);
+    if (row.inlier_indices.length !== row.inlier_count) throw new Error(`frame ${row.index} inlier count does not match its index set`);
+    if (row.inlier_indices.length + row.outlier_indices.length !== row.region_tracks.length) throw new Error(`frame ${row.index} regional classification is incomplete`);
+    countedOutliers += row.outlier_indices.length;
+    for (let regionIndex = 0; regionIndex < row.region_tracks.length; regionIndex += 1) {
+      const regional = row.region_tracks[regionIndex];
+      const shouldBeInlier = row.inlier_indices.includes(regionIndex);
+      if (regional.consensus_inlier !== shouldBeInlier) throw new Error(`frame ${row.index} region ${regionIndex} inlier flag drifted`);
+    }
     const representative = row.region_tracks[row.representative_region_index];
     if (!representative || representative.track_digest !== row.representative_track_digest) throw new Error(`frame ${row.index} representative is not one of the real Universal Creation track receipts`);
+    if (representative.consensus_inlier !== true || !row.inlier_indices.includes(row.representative_region_index)) throw new Error(`frame ${row.index} representative is not a consensus inlier`);
     if (representative.dx !== row.representative_dx || representative.dy !== row.representative_dy) throw new Error(`frame ${row.index} representative track values drifted`);
+    if (row.spread_dx > observation.policy.maxAxisSpread * 2 || row.spread_dy > observation.policy.maxAxisSpread * 2) {
+      throw new Error(`frame ${row.index} inlier spread escaped the median-deviation policy envelope`);
+    }
   }
+  if (countedOutliers !== observation.outlier_track_count) throw new Error("aggregate outlier count does not match per-frame evidence");
+
   const requiredTrack = new Set(["creative.frame-finish.block-match-track"]);
   const requiredPost = new Set(["creative.frame-finish.stabilize-translation", "creative.frame-finish.difference-frame", "creative.frame-finish.motion-trail"]);
   for (const id of requiredTrack) if (!(observation.track_operation_ids ?? []).includes(id)) throw new Error(`missing consensus track operation ${id}`);
@@ -85,6 +105,7 @@ try {
     agreement_frame_count: observation.agreement_frame_count,
     nonzero_consensus_frame_count: observation.nonzero_consensus_frame_count,
     mean_improved_frame_count: observation.mean_improved_frame_count,
+    outlier_track_count: observation.outlier_track_count,
     source_frame_sha256: consensus.source_frames.map((row) => row.sha256),
     stabilized_frame_sha256: consensus.outputs.map((row) => row.stabilized.sha256),
     finished_frame_sha256: consensus.outputs.map((row) => row.finished.sha256),
@@ -100,9 +121,9 @@ try {
     truth_boundary: {
       proves: [
         "several independently selected spatial regions were each measured by the real Universal Creation block-match Hand",
-        "the regional measurements stayed within the explicit disagreement bound on every non-reference proof frame",
-        "the median is evidence only and stabilization consumed one actual receipt-bound Universal Creation track selected nearest that median",
-        "the multi-region selection, track set, representative selection, stabilization and finished frame bytes repeated exactly for the same inputs and policy",
+        "a strict majority of regional tracks stayed inside the explicit per-axis median-deviation bound on every non-reference proof frame while disagreeing tracks remained visible as outliers",
+        "the median is evidence only and stabilization consumed one actual receipt-bound inlier Universal Creation track selected nearest that median",
+        "the multi-region selection, complete track set, inlier/outlier classification, representative selection, stabilization and finished frame bytes repeated exactly for the same inputs and policy",
         "the exact consensus-finished hashes became the exact FrameState project source hashes before final video evidence admission",
       ],
       does_not_prove: [
@@ -118,6 +139,7 @@ try {
   console.log("temporal_consensus_video_evidence=PASS");
   console.log(`regions=${evidence.policy.regionCount}`);
   console.log(`agreement_frame_count=${evidence.agreement_frame_count}`);
+  console.log(`outlier_track_count=${evidence.outlier_track_count}`);
   console.log(`nonzero_consensus_frame_count=${evidence.nonzero_consensus_frame_count}`);
   console.log(`mean_improved_frame_count=${evidence.mean_improved_frame_count}`);
   console.log(`video_sha256=${evidence.video_sha256}`);
