@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 
 import { observeUniversalCreation, observeVisualEffectFabric } from "./donor_bridge.mjs";
 import { sha256 } from "./creative_scene_operator.mjs";
@@ -30,7 +30,7 @@ function parseArgs(argv) {
 
 function pathInside(path, root) {
   const rel = relative(root, path);
-  return rel === "" || (!rel.startsWith("..") && !resolve(rel).startsWith("/"));
+  return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith("../") && !rel.startsWith("..\\"));
 }
 
 async function write(path, bytes) {
