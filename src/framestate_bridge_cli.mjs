@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, relative, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 
 import { buildFrameStateProject } from "./framestate_bridge.mjs";
 import { sha256 } from "./creative_scene_operator.mjs";
+import { pathIsInside } from "./path_safety.mjs";
 
 function parseArgs(argv) {
   if (argv[0] !== "build") throw new Error("only the 'build' command is supported");
@@ -19,10 +20,6 @@ function parseArgs(argv) {
   return values;
 }
 
-function inside(path, root) {
-  const rel = relative(root, path);
-  return rel === "" || (!rel.startsWith("..") && !resolve(rel).startsWith("/"));
-}
 async function write(path, bytes) { await mkdir(dirname(path), { recursive: true }); await writeFile(path, bytes, { flag: "w" }); }
 
 try {
@@ -33,7 +30,7 @@ try {
   const framePaths = String(args.frames).split(",").map((value) => resolve(value.trim())).filter(Boolean);
   if (projectPath === receiptPath) throw new Error("project and receipt paths must differ");
   for (const frame of framePaths) if (frame === projectPath || frame === receiptPath) throw new Error("FrameState bridge refuses to overwrite source frames");
-  if (!inside(projectPath, machineRoot) || !inside(receiptPath, machineRoot)) throw new Error("project and receipt outputs must remain inside the declared machine root");
+  if (!pathIsInside(machineRoot, projectPath) || !pathIsInside(machineRoot, receiptPath)) throw new Error("project and receipt outputs must remain inside the declared machine root");
 
   const built = await buildFrameStateProject({
     framePaths,
