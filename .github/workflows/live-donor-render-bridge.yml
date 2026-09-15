@@ -32,14 +32,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: mike-axiom-mir/axm-universal-creation
-          ref: c5496a17b9580abf870432ed2fed324b86d1fa37
+          ref: c89839485a6d09a3e70dbd633c5f1292348f37b1
           path: universal-creation
 
       - name: Checkout pinned Visual Effect Fabric donor
         uses: actions/checkout@v4
         with:
           repository: mike-axiom-mir/axm-visual-effect-fabric
-          ref: 2ecdf626c49dd2869a4d64ea356c4c3614223ad8
+          ref: bed7e20374e27b8a6edc1772c606232b196a5869
           path: visual-effect-fabric
 
       - name: Use Node.js 22
@@ -65,8 +65,8 @@ jobs:
           node --input-type=module <<'NODE'
           import { readFile } from 'node:fs/promises';
           const receipt = JSON.parse(await readFile('creative-render/build/donor-observation.json', 'utf8'));
-          if (receipt.universal_creation.hand_count !== 388) throw new Error(`expected 388 UC hands, got ${receipt.universal_creation.hand_count}`);
-          if (receipt.universal_creation.recipe_count !== 395) throw new Error(`expected 395 UC recipes, got ${receipt.universal_creation.recipe_count}`);
+          if (receipt.universal_creation.hand_count !== 501) throw new Error(`expected 501 UC hands, got ${receipt.universal_creation.hand_count}`);
+          if (receipt.universal_creation.recipe_count !== 508) throw new Error(`expected 508 UC recipes, got ${receipt.universal_creation.recipe_count}`);
           if (receipt.universal_creation.flow_status !== 'PASS') throw new Error('UC Creative Flow did not pass');
           if (receipt.universal_creation.flow_receipt_count !== 4) throw new Error('UC Creative Flow receipt count drifted');
           const expectedOps = [
