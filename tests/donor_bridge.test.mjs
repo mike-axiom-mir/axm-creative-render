@@ -8,6 +8,7 @@ import {
   observeUniversalCreation,
   observeVisualEffectFabric,
   precisionMeshToAxmScene,
+  precisionMeshToHolographicForm,
 } from "../src/donor_bridge.mjs";
 import { parseScene } from "../src/creative_scene_operator.mjs";
 
@@ -28,16 +29,18 @@ async function makeVfxFixture(root) {
     `import {createHash} from 'node:crypto';\nexport function createHandRegistry(hands){return new Map(hands.map(h=>[h.id,h]));}\nexport function executeHandGraph({registry,graph,initialState}){let state=structuredClone(initialState);const ids=[];for(const stage of graph.stages){const hand=registry.get(stage.hand);const result=hand.execute(state,stage.params||{});state=result.state;ids.push(stage.id)}const hash=createHash('sha256').update(JSON.stringify(state)).digest('hex');return {graph:{id:graph.id,version:graph.version},finalState:state,finalStateHash:hash,executedStageIds:ids};}\n`,
   );
   await writeFile(
-    join(dir, "holographic-ai-state-native.mjs"),
-    `const hand={schema:'axm.hand/v0.1',id:'fx.fixture',version:'0.1.0',execute(state){return {state:{...state,realizations:{holographicAiStateNative:{mediaType:'text/html',renderer:'axm.vfx.fixture/v0.1',derivedFromStateHash:'fixture-canonical',workingSet:{canonicalStateRetained:true,derivedGpuDataRebuildable:true,bodyBufferBuildPolicy:'once-per-body-hash',behaviorDeltaPolicy:'uniform-only',workingSetHash:'fixture-working',pointCount:12,modeledBufferBytes:336},content:'<canvas id="fixture"></canvas>'}}}}}};\nexport const HOLOGRAPHIC_AI_STATE_NATIVE_HANDS=[hand];\nexport const HOLOGRAPHIC_AI_STATE_NATIVE_GRAPH={schema:'axm.hand-graph/v0.1',id:'fx.fixture.graph',version:'0.1.0',stages:[{id:'realize',hand:'fx.fixture',params:{}}]};\nexport function makeHolographicAiInitialState(){return {effect:{id:'fixture'}};}\n`,
+    join(dir, "holographic-state-projector.mjs"),
+    `const hand={schema:'axm.hand/v0.1',id:'fx.fixture',version:'0.1.0',execute(state){const points=state.form.primitives.length*24;return {state:{...state,sampleField:{schema:'axm.holographic-sample-field/v0.1',pointCount:points},realizations:{holographicStateProjector:{mediaType:'text/html',renderer:'axm.vfx.holographic-state-projector/v0.1',derivedFromStateHash:'fixture-derived',canonicalFormHash:'fixture-form-hash',sampleFieldHash:'fixture-field-hash',workingSet:{canonicalFormRetained:true,derivedSampleFieldEditable:true,derivedGpuDataRebuildable:true,fieldBufferBuildPolicy:'once-per-sample-field-hash',sampleFieldHash:'fixture-field-hash',pointCount:points,modeledBufferBytes:points*28},content:'<canvas id="fixture"></canvas>'}}}}}};\nexport const HOLOGRAPHIC_STATE_PROJECTOR_HANDS=[hand];\nexport const HOLOGRAPHIC_STATE_PROJECTOR_GRAPH={schema:'axm.hand-graph/v0.1',id:'fx.holographic-state-projector',version:'0.1.0',stages:[{id:'realize',hand:'fx.fixture',params:{}}]};\nexport function makeHolographicFormState(form,seed=1){return {effect:{seed},form:structuredClone(form)};}\nexport function makeGlobeForm(){return {id:'fixture-globe',primitives:[{type:'sphere'}]};}\n`,
   );
 }
 
+const triangleMesh = {
+  positions: [-1, -1, 0, 1, -1, 0, 0, 1, 0],
+  indices: [0, 1, 2],
+};
+
 test("precision mesh adapter emits AXM_SCENE 1 triangles", () => {
-  const scene = precisionMeshToAxmScene({
-    positions: [-1, -1, 0, 1, -1, 0, 0, 1, 0],
-    indices: [0, 1, 2],
-  });
+  const scene = precisionMeshToAxmScene(triangleMesh);
   assert.equal(scene.version, 1);
   assert.equal(scene.triangles.length, 1);
   assert.deepEqual(scene.triangles[0].albedo, [94, 196, 255]);
@@ -47,7 +50,18 @@ test("precision mesh adapter emits AXM_SCENE 1 triangles", () => {
   );
 });
 
-test("Universal Creation donor runs a bounded Creative Flow into AXM scene state", async () => {
+test("precision mesh can become a bounded generic holographic form", () => {
+  const form = precisionMeshToHolographicForm(triangleMesh, { id: "triangle-hologram" });
+  assert.equal(form.id, "triangle-hologram");
+  assert.equal(form.primitives.length, 2);
+  assert.equal(form.primitives[0].type, "polyline");
+  assert.deepEqual(form.primitives[0].points[0], form.primitives[0].points.at(-1));
+  assert.equal(form.primitives[1].type, "points");
+  assert.equal(form.primitives[1].points.length, 3);
+  assert.equal(form.source.bounded, false);
+});
+
+test("Universal Creation donor runs Creative Flow and exposes the same mesh as holographic form state", async () => {
   const root = await mkdtemp(join(tmpdir(), "axm-cr-uc-"));
   await makeUcFixture(root);
   const result = await observeUniversalCreation(root);
@@ -63,16 +77,23 @@ test("Universal Creation donor runs a bounded Creative Flow into AXM scene state
     "mesh-analysis.bounds",
   ]);
   assert.equal(scene.triangles.length, 1);
+  assert.equal(result.holographicForm.id, "creative-render-live-donor-cube-hologram");
+  assert.equal(result.holographicForm.primitives[0].type, "polyline");
+  assert.equal(result.observation.holographic_primitive_count, 2);
 });
 
-test("Visual Effect Fabric donor executes a state-native Hand graph", async () => {
+test("Visual Effect Fabric donor projects caller-supplied generic form state", async () => {
   const root = await mkdtemp(join(tmpdir(), "axm-cr-vfx-"));
   await makeVfxFixture(root);
-  const result = await observeVisualEffectFabric(root);
-  assert.equal(result.observation.graph_id, "fx.fixture.graph");
+  const form = precisionMeshToHolographicForm(triangleMesh, { id: "uc-created-triangle" });
+  const result = await observeVisualEffectFabric(root, { form });
+  assert.equal(result.observation.graph_id, "fx.holographic-state-projector");
   assert.equal(result.observation.executed_stage_count, 1);
-  assert.equal(result.observation.renderer, "axm.vfx.fixture/v0.1");
-  assert.equal(result.observation.canonical_state_retained, true);
+  assert.equal(result.observation.form_id, "uc-created-triangle");
+  assert.equal(result.observation.renderer, "axm.vfx.holographic-state-projector/v0.1");
+  assert.equal(result.observation.canonical_form_retained, true);
+  assert.equal(result.observation.derived_sample_field_editable, true);
   assert.equal(result.observation.derived_gpu_data_rebuildable, true);
+  assert.equal(result.observation.field_buffer_build_policy, "once-per-sample-field-hash");
   assert.match(result.htmlBytes.toString("utf8"), /<canvas/);
 });

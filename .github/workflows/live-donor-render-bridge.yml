@@ -39,7 +39,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: mike-axiom-mir/axm-visual-effect-fabric
-          ref: 6639742ec3b909ae697dadb5b5290b94b41354a3
+          ref: 2ecdf626c49dd2869a4d64ea356c4c3614223ad8
           path: visual-effect-fabric
 
       - name: Use Node.js 22
@@ -78,14 +78,19 @@ jobs:
           if (JSON.stringify(receipt.universal_creation.flow_operations) !== JSON.stringify(expectedOps)) {
             throw new Error(`UC Creative Flow operations drifted: ${JSON.stringify(receipt.universal_creation.flow_operations)}`);
           }
-          if (receipt.visual_effect_fabric.graph_id !== 'fx.holographic-ai-entity-state-native') throw new Error('VFX graph drifted');
-          if (receipt.visual_effect_fabric.renderer !== 'axm.vfx.state-native-points/v0.1') throw new Error('VFX renderer drifted');
+          if (receipt.visual_effect_fabric.graph_id !== 'fx.holographic-state-projector') throw new Error('VFX graph drifted');
+          if (receipt.visual_effect_fabric.renderer !== 'axm.vfx.holographic-state-projector/v0.1') throw new Error('VFX renderer drifted');
+          if (receipt.visual_effect_fabric.form_id !== receipt.universal_creation.holographic_form_id) throw new Error('UC mesh hologram identity was not preserved into VFX');
           if (!(receipt.visual_effect_fabric.point_count > 0)) throw new Error('VFX working set is empty');
-          if (receipt.visual_effect_fabric.canonical_state_retained !== true) throw new Error('VFX canonical-state boundary lost');
+          if (receipt.visual_effect_fabric.canonical_form_retained !== true) throw new Error('VFX canonical-form boundary lost');
+          if (receipt.visual_effect_fabric.derived_sample_field_editable !== true) throw new Error('VFX editable sample-field boundary lost');
           if (receipt.visual_effect_fabric.derived_gpu_data_rebuildable !== true) throw new Error('VFX derived-working-set boundary lost');
+          if (receipt.visual_effect_fabric.field_buffer_build_policy !== 'once-per-sample-field-hash') throw new Error('VFX field rebuild policy drifted');
           console.log('pinned_donor_contracts=PASS');
           console.log(`uc_flow_digest=${receipt.universal_creation.flow_digest}`);
           console.log(`uc_scene_sha256=${receipt.outputs.uc_scene.sha256}`);
+          console.log(`vfx_form=${receipt.visual_effect_fabric.form_id}`);
+          console.log(`vfx_sample_field_hash=${receipt.visual_effect_fabric.sample_field_hash}`);
           console.log(`vfx_final_state_hash=${receipt.visual_effect_fabric.final_state_hash}`);
           console.log(`vfx_html_sha256=${receipt.outputs.vfx_html.sha256}`);
           NODE

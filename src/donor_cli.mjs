@@ -57,10 +57,8 @@ try {
     }
   }
 
-  const [uc, vfx] = await Promise.all([
-    observeUniversalCreation(ucRoot),
-    observeVisualEffectFabric(vfxRoot),
-  ]);
+  const uc = await observeUniversalCreation(ucRoot);
+  const vfx = await observeVisualEffectFabric(vfxRoot, { form: uc.holographicForm });
 
   await write(outputs.ucScene, uc.sceneBytes);
   await write(outputs.vfxState, vfx.stateBytes);
@@ -68,8 +66,9 @@ try {
 
   const receipt = {
     contract: "AXM_CREATIVE_DONOR_RECEIPT",
-    version: 1,
+    version: 2,
     mode: "explicit-local-donor-observation",
+    bridge: "uc-creative-mesh-to-generic-holographic-state-projector",
     universal_creation: uc.observation,
     visual_effect_fabric: vfx.observation,
     outputs: {
@@ -95,6 +94,7 @@ try {
   console.log(`uc_creative_recipes=${receipt.universal_creation.recipe_count}`);
   console.log(`uc_scene_sha256=${receipt.outputs.uc_scene.sha256}`);
   console.log(`vfx_graph=${receipt.visual_effect_fabric.graph_id}`);
+  console.log(`vfx_form=${receipt.visual_effect_fabric.form_id}`);
   console.log(`vfx_renderer=${receipt.visual_effect_fabric.renderer}`);
   console.log(`vfx_point_count=${receipt.visual_effect_fabric.point_count}`);
   console.log(`vfx_modeled_buffer_bytes=${receipt.visual_effect_fabric.modeled_buffer_bytes}`);
