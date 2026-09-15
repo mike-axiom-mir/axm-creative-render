@@ -1,0 +1,12 @@
+{
+  "contract": "AXM_CREATIVE_OPERATOR",
+  "version": 1,
+  "id": "axm.creative.translate.test",
+  "domain": "scene",
+  "kind": "translate",
+  "parameters": {
+    "dx": 0.1,
+    "dy": -0.2,
+    "dz": 0.05
+  }
+}
