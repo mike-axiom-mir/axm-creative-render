@@ -58,14 +58,40 @@ test("consensus summary uses median evidence but returns a real representative t
   const summary = summarizeTrackConsensus(rows, 2);
   assert.equal(summary.median_dx, 4);
   assert.equal(summary.median_dy, 2);
+  assert.equal(summary.quorum, 2);
+  assert.equal(summary.inlier_count, 3);
+  assert.deepEqual(summary.inlier_indices, [0, 1, 2]);
+  assert.deepEqual(summary.outlier_indices, []);
   assert.equal(summary.agreement, true);
   assert.equal(summary.representative_track, rows[0]);
   assert.equal(summary.representative_track.digest, "track-0");
 });
 
-test("consensus summary exposes disagreement without manufacturing a track", () => {
+test("consensus tolerates one visible outlier when a strict majority stays near the median", () => {
+  const rows = [track(4, 2, 8, 0), track(5, 2, 3, 1), track(8, 13, 1, 2)];
+  const summary = summarizeTrackConsensus(rows, 2);
+  assert.equal(summary.median_dx, 5);
+  assert.equal(summary.median_dy, 2);
+  assert.equal(summary.quorum, 2);
+  assert.equal(summary.inlier_count, 2);
+  assert.deepEqual(summary.inlier_indices, [0, 1]);
+  assert.deepEqual(summary.outlier_indices, [2]);
+  assert.equal(summary.agreement, true);
+  assert.equal(summary.raw_spread_dx, 4);
+  assert.equal(summary.raw_spread_dy, 11);
+  assert.equal(summary.spread_dx, 1);
+  assert.equal(summary.spread_dy, 0);
+  assert.equal(summary.representative_track, rows[1]);
+  assert(rows.includes(summary.representative_track));
+});
+
+test("consensus fails closed when fewer than a strict majority are inliers", () => {
   const rows = [track(-8, 0, 2, 0), track(4, 2, 3, 1), track(10, 8, 4, 2)];
   const summary = summarizeTrackConsensus(rows, 4);
+  assert.equal(summary.quorum, 2);
+  assert.equal(summary.inlier_count, 1);
+  assert.deepEqual(summary.inlier_indices, [1]);
+  assert.deepEqual(summary.outlier_indices, [0, 2]);
   assert.equal(summary.agreement, false);
   assert(rows.includes(summary.representative_track));
 });
