@@ -62,14 +62,26 @@ jobs:
           const receipt = JSON.parse(await readFile('creative-render/build/donor-observation.json', 'utf8'));
           if (receipt.universal_creation.hand_count !== 388) throw new Error(`expected 388 UC hands, got ${receipt.universal_creation.hand_count}`);
           if (receipt.universal_creation.recipe_count !== 395) throw new Error(`expected 395 UC recipes, got ${receipt.universal_creation.recipe_count}`);
-          if (receipt.universal_creation.probe_hand !== 'creative.mesh-primitive.cube') throw new Error('UC cube proof hand drifted');
+          if (receipt.universal_creation.flow_status !== 'PASS') throw new Error('UC Creative Flow did not pass');
+          if (receipt.universal_creation.flow_receipt_count !== 4) throw new Error('UC Creative Flow receipt count drifted');
+          const expectedOps = [
+            'creative.mesh-primitive.cube',
+            'creative.mesh-transform.scale',
+            'creative.mesh-transform.rotate-y',
+            'mesh-analysis.bounds',
+          ];
+          if (JSON.stringify(receipt.universal_creation.flow_operations) !== JSON.stringify(expectedOps)) {
+            throw new Error(`UC Creative Flow operations drifted: ${JSON.stringify(receipt.universal_creation.flow_operations)}`);
+          }
           if (receipt.visual_effect_fabric.graph_id !== 'fx.holographic-ai-entity-state-native') throw new Error('VFX graph drifted');
           if (receipt.visual_effect_fabric.renderer !== 'axm.vfx.state-native-points/v0.1') throw new Error('VFX renderer drifted');
           if (!(receipt.visual_effect_fabric.point_count > 0)) throw new Error('VFX working set is empty');
           if (receipt.visual_effect_fabric.canonical_state_retained !== true) throw new Error('VFX canonical-state boundary lost');
           if (receipt.visual_effect_fabric.derived_gpu_data_rebuildable !== true) throw new Error('VFX derived-working-set boundary lost');
           console.log('pinned_donor_contracts=PASS');
+          console.log(`uc_flow_digest=${receipt.universal_creation.flow_digest}`);
           console.log(`uc_scene_sha256=${receipt.outputs.uc_scene.sha256}`);
+          console.log(`vfx_final_state_hash=${receipt.visual_effect_fabric.final_state_hash}`);
           console.log(`vfx_html_sha256=${receipt.outputs.vfx_html.sha256}`);
           NODE
 
