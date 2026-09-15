@@ -114,12 +114,45 @@ jobs:
 
       - name: Render and assemble FrameState video
         run: |
+          set +e
           PYTHONPATH=framestate/src python -m axm_framestate render \
             creative-render/build/framestate-project.json \
             creative-render/build/framestate-render \
-            --profile fast > creative-render/build/framestate-render-output.json
+            --profile fast \
+            > creative-render/build/framestate-render-output.json \
+            2> creative-render/build/framestate-render-stderr.txt
+          rc=$?
+          set -e
+          echo "$rc" > creative-render/build/framestate-render-returncode.txt
+          {
+            echo "returncode=$rc"
+            echo "--- stderr ---"
+            cat creative-render/build/framestate-render-stderr.txt || true
+            echo "--- stdout ---"
+            cat creative-render/build/framestate-render-output.json || true
+            echo "--- produced files ---"
+            find creative-render/build/framestate-render -maxdepth 3 -type f -printf '%P %s bytes\n' 2>/dev/null | sort || true
+          } | tee creative-render/build/framestate-render-diagnostic.txt
+          if [ "$rc" -ne 0 ]; then exit "$rc"; fi
           test -s creative-render/build/framestate-render/video.mp4
           test -s creative-render/build/framestate-render/render-receipt.json
+
+      - name: Upload FrameState render diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-framestate-render-failure
+          if-no-files-found: warn
+          path: |
+            creative-render/build/framestate-project.json
+            creative-render/build/framestate-project.receipt.json
+            creative-render/build/framestate-inspect.json
+            creative-render/build/framestate-ffmpeg-environment.txt
+            creative-render/build/framestate-render-output.json
+            creative-render/build/framestate-render-stderr.txt
+            creative-render/build/framestate-render-returncode.txt
+            creative-render/build/framestate-render-diagnostic.txt
+            creative-render/build/framestate-render/
 
       - name: FrameState deterministic repeat verification
         run: |
