@@ -1,0 +1,174 @@
+name: direct-sample-render-bridge
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: direct-sample-render-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-direct-sample-render:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned Universal Creation donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-universal-creation
+          ref: c89839485a6d09a3e70dbd633c5f1292348f37b1
+          path: universal-creation
+
+      - name: Checkout pinned Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: bed7e20374e27b8a6edc1772c606232b196a5869
+          path: visual-effect-fabric
+
+      - name: Checkout pinned Render Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Build direct-sample projection from current pinned donors
+        run: |
+          mkdir -p creative-render/build/direct-sample
+          node creative-render/src/direct_sample_cli.mjs build \
+            --uc-root universal-creation \
+            --vfx-root visual-effect-fabric \
+            --scene creative-render/build/direct-sample/source.axmscene \
+            --state creative-render/build/direct-sample/vfx-state.json \
+            --html creative-render/build/direct-sample/vfx-projector.html \
+            --receipt creative-render/build/direct-sample/direct-sample.receipt.json
+
+      - name: Assert source identity and bounded direct-sample evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+          const receiptBytes = await readFile('creative-render/build/direct-sample/direct-sample.receipt.json');
+          const receipt = JSON.parse(receiptBytes.toString('utf8'));
+          const sceneBytes = await readFile('creative-render/build/direct-sample/source.axmscene');
+          const htmlBytes = await readFile('creative-render/build/direct-sample/vfx-projector.html');
+          if (receipt.contract !== 'AXM_CREATIVE_DIRECT_SAMPLE_RECEIPT' || receipt.version !== 1) throw new Error('direct-sample receipt drifted');
+          if (receipt.repeat_verification !== 'PASS') throw new Error('direct-sample repeat verification failed');
+          if (receipt.universal_creation.hand_count !== 501 || receipt.universal_creation.recipe_count !== 508) throw new Error('UC creative census drifted');
+          if (receipt.outputs.scene.sha256 !== sha(sceneBytes)) throw new Error('scene bytes are not bound to direct-sample receipt');
+          if (receipt.adapter.source_scene_sha256 !== receipt.outputs.scene.sha256) throw new Error('adapter source identity drifted');
+          if (receipt.adapter.source_triangle_count !== 12 || receipt.adapter.projected_triangle_count !== 12) throw new Error('pinned source triangle evidence drifted');
+          if (receipt.adapter.point_count !== 324 || receipt.visual_effect_fabric.point_count !== 324) throw new Error('direct-sample point continuity drifted');
+          if (receipt.visual_effect_fabric.graph_id !== 'fx.holographic-state-projector-direct-sample') throw new Error('wrong VFX direct-sample graph');
+          if (receipt.visual_effect_fabric.source_kind !== 'AXM_SCENE 1') throw new Error('VFX source kind drifted');
+          if (receipt.visual_effect_fabric.source_digest !== receipt.outputs.scene.sha256) throw new Error('VFX lost exact scene source digest');
+          if (receipt.visual_effect_fabric.source_identity_retained !== true) throw new Error('source identity was not retained');
+          if (receipt.visual_effect_fabric.derived_sample_field_editable !== true || receipt.visual_effect_fabric.derived_gpu_data_rebuildable !== true) throw new Error('VFX working-set boundary drifted');
+          if (receipt.visual_effect_fabric.field_buffer_build_policy !== 'once-per-sample-field-hash') throw new Error('VFX buffer policy drifted');
+          if (receipt.outputs.vfx_html.sha256 !== sha(htmlBytes)) throw new Error('VFX HTML bytes are not bound');
+          console.log('direct_sample_source_identity=PASS');
+          console.log(`scene_sha256=${receipt.outputs.scene.sha256}`);
+          console.log(`point_count=${receipt.adapter.point_count}`);
+          console.log(`vfx_final_state_hash=${receipt.visual_effect_fabric.final_state_hash}`);
+          console.log(`vfx_html_sha256=${receipt.outputs.vfx_html.sha256}`);
+          NODE
+
+      - name: Build and test pinned Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render the exact same AXM scene through native Render Fabric
+        run: |
+          cat > creative-render/build/direct-sample/source.axmrender <<'EOF'
+          # AXM Creative Render v0.11 direct-sample/render dual projection proof.
+          AXM_RENDER_REQUEST 1
+          scene source.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output source.ppm
+          EOF
+          render-fabric/build/axm-render \
+            --request creative-render/build/direct-sample/source.axmrender \
+            --receipt creative-render/build/direct-sample/source.axmreceipt
+          render-fabric/build/axm-render-verify-receipt \
+            creative-render/build/direct-sample/source.axmrender \
+            creative-render/build/direct-sample/source.axmreceipt
+          test -s creative-render/build/direct-sample/source.ppm
+
+      - name: Bind render evidence and VFX evidence to one source scene
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+          const base = 'creative-render/build/direct-sample/';
+          const [directBytes, scene, request, renderReceipt, frame, vfxHtml, vfxState] = await Promise.all([
+            readFile(base+'direct-sample.receipt.json'),
+            readFile(base+'source.axmscene'),
+            readFile(base+'source.axmrender'),
+            readFile(base+'source.axmreceipt'),
+            readFile(base+'source.ppm'),
+            readFile(base+'vfx-projector.html'),
+            readFile(base+'vfx-state.json'),
+          ]);
+          const direct = JSON.parse(directBytes.toString('utf8'));
+          const sceneSha = sha(scene);
+          if (direct.outputs.scene.sha256 !== sceneSha || direct.visual_effect_fabric.source_digest !== sceneSha) throw new Error('source scene identity is not continuous into VFX');
+          const evidence = {
+            contract: 'AXM_CREATIVE_DIRECT_SAMPLE_RENDER_EVIDENCE',
+            version: 1,
+            source_scene_sha256: sceneSha,
+            direct_sample_receipt_sha256: sha(directBytes),
+            vfx_state_sha256: sha(vfxState),
+            vfx_html_sha256: sha(vfxHtml),
+            render_request_sha256: sha(request),
+            render_receipt_sha256: sha(renderReceipt),
+            render_frame_sha256: sha(frame),
+            render_receipt_replay: 'PASS-executed-before-binding',
+            vfx_graph: direct.visual_effect_fabric.graph_id,
+            renderer_backend: 'axm.native.cpu.reference',
+            authority: {
+              source_scene: 'AXM_SCENE_1_CALLER_STATE',
+              vfx_sample_field: 'DERIVED_REBUILDABLE_PROJECTION_STATE',
+              render_pixels: 'DERIVED_RENDER_FABRIC_OUTPUT',
+            },
+            truth_boundary: {
+              proves: 'the exact same AXM scene bytes are the source identity for the VFX direct-sample projection and the independently receipt-verified native render path',
+              does_not_prove: 'pixel equivalence between the VFX HTML realization and native Render Fabric, visual quality, material preservation in VFX, physical holography, or cross-machine determinism',
+            },
+          };
+          await writeFile(base+'direct-sample-render-evidence.json', JSON.stringify(evidence, null, 2)+'\n');
+          console.log('direct_sample_render_binding=PASS');
+          console.log(`scene_sha256=${sceneSha}`);
+          console.log(`render_frame_sha256=${evidence.render_frame_sha256}`);
+          console.log(`vfx_html_sha256=${evidence.vfx_html_sha256}`);
+          NODE
+
+      - name: Upload complete direct-sample/render proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-direct-sample-render-proof
+          path: creative-render/build/direct-sample/
