@@ -3,12 +3,16 @@ import { relative, resolve, sep } from "node:path";
 
 import { parsePpmRgb8 } from "./post_render_bridge.mjs";
 import { sha256 } from "./creative_scene_operator.mjs";
+import { pathIsInside } from "./path_safety.mjs";
 
 function portableRelative(fromRoot, target) {
-  const rel = relative(resolve(fromRoot), resolve(target));
-  if (!rel || rel.startsWith("..") || resolve(fromRoot, rel) !== resolve(target)) {
+  const root = resolve(fromRoot);
+  const absoluteTarget = resolve(target);
+  if (!pathIsInside(root, absoluteTarget)) {
     throw new Error("FrameState media path must resolve inside the declared machine root");
   }
+  const rel = relative(root, absoluteTarget);
+  if (!rel) throw new Error("FrameState media path must name a file below the declared machine root");
   return rel.split(sep).join("/");
 }
 
