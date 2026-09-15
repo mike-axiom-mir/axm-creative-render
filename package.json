@@ -1,6 +1,6 @@
 {
   "name": "axm-creative-render",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "private": true,
   "type": "module",
   "description": "Experimental creative operators and explicit donor bridges over renderer-consumable canonical state.",
