@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, relative, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 
 import { executeElectricEffect } from "./vfx_frame_bridge.mjs";
 import { sha256 } from "./creative_scene_operator.mjs";
+import { pathIsInside } from "./path_safety.mjs";
 
 function parseArgs(argv) {
   if (argv[0] !== "export") throw new Error("only the 'export' command is supported");
@@ -17,11 +18,6 @@ function parseArgs(argv) {
   }
   for (const key of ["vfx-root", "svg", "state", "receipt"]) if (!values[key]) throw new Error(`missing --${key}`);
   return values;
-}
-
-function inside(path, root) {
-  const rel = relative(root, path);
-  return rel === "" || (!rel.startsWith("..") && !resolve(rel).startsWith("/"));
 }
 
 async function write(path, bytes) {
@@ -38,7 +34,7 @@ try {
   const seed = args.seed == null ? 20260915 : Number(args.seed);
   const outputs = [svgPath, statePath, receiptPath];
   if (new Set(outputs).size !== outputs.length) throw new Error("VFX export paths must be distinct");
-  for (const path of outputs) if (inside(path, vfxRoot)) throw new Error("VFX export outputs may not be written inside the Visual Effect Fabric donor repository");
+  for (const path of outputs) if (pathIsInside(vfxRoot, path)) throw new Error("VFX export outputs may not be written inside the Visual Effect Fabric donor repository");
 
   const first = await executeElectricEffect(vfxRoot, seed);
   const second = await executeElectricEffect(vfxRoot, seed);
