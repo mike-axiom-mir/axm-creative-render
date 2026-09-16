@@ -1,0 +1,226 @@
+name: uc-mixed-fabrication-native
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: uc-mixed-fabrication-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-uc-mixed-fabrication-native:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Universal Creation
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-universal-creation
+          ref: dde8d952161788f8bf21118f91edd3163e51277d
+          path: universal-creation
+
+      - name: Checkout pinned Render Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Use Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Prepare retained proof directory
+        run: mkdir -p creative-render/build/uc-mixed-fabrication
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run current Universal Creation mixed-fabrication tests
+        run: python universal-creation/tests/test_mesh_mixed_fabrication.py
+
+      - name: Build root, mixed hole-plus-notch stage, then exact resumed second-notch stage through real UC
+        run: |
+          python <<'PY'
+          from __future__ import annotations
+          import hashlib, json, math, sys
+          from pathlib import Path
+
+          ROOT=Path('universal-creation').resolve(); sys.path.insert(0,str(ROOT/'src'))
+          from axm_uc.machine import UniversalCreationMachine
+          from axm_uc.mesh_mixed_fabrication import build_mixed_fabrication
+          from axm_uc.precision_cutter import build_cut
+          from axm_uc.procedural_3d import publish_glb,verify_glb
+
+          OUT=Path('creative-render/build/uc-mixed-fabrication').resolve(); OUT.mkdir(parents=True,exist_ok=True)
+          root_path=OUT/'root.glb'; one_path=OUT/'stage-one.glb'; two_path=OUT/'stage-two.glb'
+          one_receipt=OUT/'stage-one.lineage.json'; two_receipt=OUT/'stage-two.lineage.json'
+          material={'color':'#527A91FF','metallic':0.35,'roughness':0.42}
+
+          # Local Y is the proven extrusion/fabrication axis. Rotate it onto world Z so the
+          # donor's X/Z cut cross-section maps into Render Fabric's fixed X/Y proof view.
+          rotation=[[1.0,0.0,0.0],[0.0,0.0,-1.0],[0.0,1.0,0.0]]
+          def mv(v): return [sum(rotation[r][c]*v[c] for c in range(3)) for r in range(3)]
+          def wp(v): return mv(v)
+          def axes(): return [[rotation[r][c] for r in range(3)] for c in range(3)]
+
+          sx,sy,sz=1.4,.6,1.0
+          built=build_cut({'schema':'axm.precision-cutter/v0.1','name':'Creative Render mixed root','operation':'profile-cut','thickness':sy,'material':material,'profile':[[-sx/2,-sz/2],[sx/2,-sz/2],[sx/2,sz/2],[-sx/2,sz/2]]})
+          source_surface=json.loads(json.dumps(built['surface_specification'])); source_surface['name']='Creative Render mixed root'
+          primitive=source_surface['primitives'][0]
+          primitive['positions']=[wp(p) for p in primitive['positions']]
+          primitive['normals']=[mv(n) for n in primitive['normals']]
+          publication=publish_glb(root_path,source_surface)
+          root_bytes=root_path.read_bytes(); root_sha=hashlib.sha256(root_bytes).hexdigest()
+          if publication['sha256']!=root_sha or not verify_glb(root_bytes)['passed']: raise RuntimeError('root GLB publication/validation drifted')
+
+          def hole(i,local,r=.08,segments=18): return {'id':i,'operation':'round-through-hole','center':wp(local),'radius':r,'segments':segments,'kerf':.02}
+          def notch(i,local,side,span,depth): return {'id':i,'operation':'box-notch','center':wp(local),'side':side,'span':span,'depth':depth,'kerf':.02}
+          def spec(name,ops): return {'schema':'axm.mesh-mixed-fabrication-chain/v0.7','name':name,'axis_vector':axes()[1],'operations':ops}
+
+          stage_one_spec=spec('Creative Render mixed stage one',[
+            hole('hole-a',[-.35,0,.20]),
+            notch('notch-a',[0,0,-.20],'u-max',.18,.12),
+          ])
+          direct_one_a=build_mixed_fabrication(root_path,stage_one_spec,expected_source_sha256=root_sha)
+          direct_one_b=build_mixed_fabrication(root_path,stage_one_spec,expected_source_sha256=root_sha)
+          if direct_one_a['surface_specification']!=direct_one_b['surface_specification'] or direct_one_a['lineage']!=direct_one_b['lineage']: raise RuntimeError('fresh mixed build did not repeat identically')
+          machine=UniversalCreationMachine(ROOT)
+          first=machine.create({'kind':'mesh-mixed-fabrication-chain','inputs':{'source_path':str(root_path),'path':str(one_path),'receipt_path':str(one_receipt),'expected_source_sha256':root_sha,'specification':stage_one_spec}})
+          if first.get('type')!='CREATION_RESULT': raise RuntimeError(f'UC mixed stage one failed: {first!r}')
+          one=first['result']; one_bytes=one_path.read_bytes(); one_sha=hashlib.sha256(one_bytes).hexdigest(); one_lineage_bytes=one_receipt.read_bytes(); one_lineage=json.loads(one_lineage_bytes)
+          if one['truth_status']!='VALIDATED_HASH_LINKED_MIXED_FABRICATION_CHAIN': raise RuntimeError('stage-one truth status drifted')
+          if one['sha256']!=one_sha or direct_one_a['predicted_glb_sha256']!=one_sha or not verify_glb(one_bytes)['passed']: raise RuntimeError('stage-one direct/public identity drifted')
+          if root_path.read_bytes()!=root_bytes or not one['source_unchanged_after_publication']: raise RuntimeError('stage one mutated root source')
+          if one['metrics']['hole_count']!=1 or one['metrics']['notch_count']!=1: raise RuntimeError('stage one did not contain one hole plus one notch')
+
+          stage_two_spec=spec('Creative Render mixed resumed stage two',[
+            notch('notch-b',[.20,0,0],'v-max',.16,.10),
+          ])
+          direct_two_a=build_mixed_fabrication(one_path,stage_two_spec,lineage_path=one_receipt,expected_source_sha256=one_sha,expected_lineage_sha256=one['lineage_sha256'])
+          direct_two_b=build_mixed_fabrication(one_path,stage_two_spec,lineage_path=one_receipt,expected_source_sha256=one_sha,expected_lineage_sha256=one['lineage_sha256'])
+          if direct_two_a['surface_specification']!=direct_two_b['surface_specification'] or direct_two_a['lineage']!=direct_two_b['lineage']: raise RuntimeError('resumed mixed build did not repeat identically')
+          second=machine.create({'kind':'mesh-mixed-fabrication-chain','inputs':{'source_path':str(one_path),'lineage_path':str(one_receipt),'expected_lineage_sha256':one['lineage_sha256'],'expected_source_sha256':one_sha,'path':str(two_path),'receipt_path':str(two_receipt),'specification':stage_two_spec}})
+          if second.get('type')!='CREATION_RESULT': raise RuntimeError(f'UC mixed stage two failed: {second!r}')
+          two=second['result']; two_bytes=two_path.read_bytes(); two_sha=hashlib.sha256(two_bytes).hexdigest(); two_lineage_bytes=two_receipt.read_bytes(); two_lineage=json.loads(two_lineage_bytes)
+          if two['truth_status']!='VALIDATED_HASH_LINKED_MIXED_FABRICATION_CHAIN': raise RuntimeError('stage-two truth status drifted')
+          if two['sha256']!=two_sha or direct_two_a['predicted_glb_sha256']!=two_sha or not verify_glb(two_bytes)['passed']: raise RuntimeError('stage-two direct/public identity drifted')
+          if one_path.read_bytes()!=one_bytes or root_path.read_bytes()!=root_bytes: raise RuntimeError('resume mutated root or stage-one source')
+          if two['parent_lineage_sha256']!=one['lineage_sha256'] or two['cumulative_operation_count']!=3: raise RuntimeError('stage-two parent/count continuity drifted')
+          if two['metrics']['hole_count']!=1 or two['metrics']['notch_count']!=2 or not two['metrics']['removed_volume']>one['metrics']['removed_volume']>0: raise RuntimeError('stage-two mixed volume/count evidence drifted')
+          if two_lineage['operations'][:2]!=one_lineage['operations'] or two_lineage['steps'][:2]!=one_lineage['steps']: raise RuntimeError('resume rewrote prior mixed operation receipts or steps')
+          truth=two_lineage['truth_boundary']
+          if truth['same_axis_mixed_holes_and_notches'] is not True or truth['v07_resume_requires_exact_v07_recompile'] is not True or truth['nonoverlap_and_nontouch_required'] is not True: raise RuntimeError('mixed resume truth boundary drifted')
+          if truth['cross_axis_chain']!='NOT_SUPPORTED' or truth['general_arbitrary_mesh_csg'] is not False: raise RuntimeError('mixed unsupported boundary drifted')
+          if one['output_topology']['status']!='CLOSED_ORIENTED_EDGE_MANIFOLD_CANDIDATE' or two['output_topology']['status']!='CLOSED_ORIENTED_EDGE_MANIFOLD_CANDIDATE': raise RuntimeError('mixed topology gate failed')
+
+          bundle={
+            'contract':'AXM_UC_MIXED_FABRICATION_DONOR_BUNDLE','version':1,
+            'donor':{'repository':'mike-axiom-mir/axm-universal-creation','revision':'dde8d952161788f8bf21118f91edd3163e51277d','public_route':'mesh-mixed-fabrication-chain','capability_version':'0.7.0'},
+            'source':{'glb_sha256':root_sha,'glb_bytes':len(root_bytes),'unchanged_after_all_stages':root_path.read_bytes()==root_bytes,'surface':source_surface},
+            'stage_one':{'truth_status':one['truth_status'],'source_sha256':root_sha,'glb_sha256':one_sha,'glb_bytes':len(one_bytes),'lineage_sha256':one['lineage_sha256'],'lineage_receipt_sha256':hashlib.sha256(one_lineage_bytes).hexdigest(),'cumulative_operation_count':one['cumulative_operation_count'],'geometry':one['geometry'],'metrics':one['metrics'],'glb_validation_passed':one['glb_validation']['passed'],'lineage':one_lineage,'surface':direct_one_a['surface_specification']},
+            'stage_two':{'truth_status':two['truth_status'],'source_sha256':one_sha,'glb_sha256':two_sha,'glb_bytes':len(two_bytes),'lineage_sha256':two['lineage_sha256'],'parent_lineage_sha256':two['parent_lineage_sha256'],'lineage_receipt_sha256':hashlib.sha256(two_lineage_bytes).hexdigest(),'cumulative_operation_count':two['cumulative_operation_count'],'geometry':two['geometry'],'metrics':two['metrics'],'glb_validation_passed':two['glb_validation']['passed'],'lineage':two_lineage,'surface':direct_two_a['surface_specification']},
+          }
+          (OUT/'donor-bundle.json').write_text(json.dumps(bundle,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          print('uc_mixed_fabrication_public_route=PASS')
+          print(f'root_glb_sha256={root_sha}')
+          print(f'stage_one_glb_sha256={one_sha}')
+          print(f'stage_two_glb_sha256={two_sha}')
+          print(f'stage_one_lineage_sha256={one["lineage_sha256"]}')
+          print(f'stage_two_lineage_sha256={two["lineage_sha256"]}')
+          print(f'operations={[(r["id"],r["operation"]) for r in two_lineage["operations"]]}')
+          print(f'triangles={direct_one_a["geometry"]["triangles"]},{direct_two_a["geometry"]["triangles"]}')
+          print(f'removed_volume={one["metrics"]["removed_volume"]},{two["metrics"]["removed_volume"]}')
+          PY
+
+      - name: Adapt root and both exact mixed UC surfaces into renderer-neutral scenes
+        run: |
+          node creative-render/src/uc_mixed_fabrication_cli.mjs build \
+            --uc-root universal-creation \
+            --donor-bundle creative-render/build/uc-mixed-fabrication/donor-bundle.json \
+            --source-scene creative-render/build/uc-mixed-fabrication/source.axmscene \
+            --stage-one-scene creative-render/build/uc-mixed-fabrication/stage-one.axmscene \
+            --stage-two-scene creative-render/build/uc-mixed-fabrication/stage-two.axmscene \
+            --evidence creative-render/build/uc-mixed-fabrication/scene-evidence.json
+
+      - name: Assert exact mixed lineage, source authority, and adapter continuity
+        run: |
+          node --input-type=module <<'NODE'
+          import {readFile} from 'node:fs/promises'; import {createHash} from 'node:crypto'; import {parseScene} from './creative-render/src/creative_scene_operator.mjs';
+          const sha=b=>createHash('sha256').update(b).digest('hex'),base='creative-render/build/uc-mixed-fabrication/';
+          const [bundleBytes,evidenceBytes,sourceBytes,oneBytes,twoBytes]=await Promise.all([readFile(base+'donor-bundle.json'),readFile(base+'scene-evidence.json'),readFile(base+'source.axmscene'),readFile(base+'stage-one.axmscene'),readFile(base+'stage-two.axmscene')]);
+          const b=JSON.parse(bundleBytes),e=JSON.parse(evidenceBytes);
+          if(e.contract!=='AXM_CREATIVE_UC_MIXED_FABRICATION_SCENE_EVIDENCE'||e.version!==1)throw new Error('mixed scene evidence contract drifted');
+          if(e.observation.donor.donor_revision!=='dde8d952161788f8bf21118f91edd3163e51277d')throw new Error('UC mixed donor revision drifted');
+          if(e.inputs.donor_bundle.sha256!==sha(bundleBytes))throw new Error('mixed donor bundle bytes are not bound');
+          for(const [name,bytes] of [['source',sourceBytes],['stage_one',oneBytes],['stage_two',twoBytes]])if(e.outputs[`${name}_scene`].sha256!==sha(bytes))throw new Error(`${name} scene bytes are not bound`);
+          if(new Set([sha(sourceBytes),sha(oneBytes),sha(twoBytes)]).size!==3)throw new Error('mixed fabrication scene states are not distinct');
+          if(e.observation.source_preserved!==true||b.source.unchanged_after_all_stages!==true||e.observation.same_adapter_albedo!==true)throw new Error('mixed source/albedo authority drifted');
+          if(b.stage_two.parent_lineage_sha256!==b.stage_one.lineage_sha256)throw new Error('mixed parent lineage drifted');
+          if(JSON.stringify(b.stage_two.lineage.operations.slice(0,2))!==JSON.stringify(b.stage_one.lineage.operations)||JSON.stringify(b.stage_two.lineage.steps.slice(0,2))!==JSON.stringify(b.stage_one.lineage.steps))throw new Error('mixed resume rewrote retained evidence');
+          const counts=[sourceBytes,oneBytes,twoBytes].map(bytes=>parseScene(bytes.toString('utf8')).triangles.length);
+          if(JSON.stringify(counts)!==JSON.stringify([e.observation.donor.root_triangles,e.observation.donor.stage_one_triangles,e.observation.donor.stage_two_triangles]))throw new Error('mixed scene triangle lineage drifted');
+          console.log('uc_mixed_fabrication_lineage=PASS'); console.log(`scene_triangles=${counts.join(',')}`); console.log(`lineages=${b.stage_one.lineage_sha256},${b.stage_two.lineage_sha256}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify root and both mixed fabrication scenes
+        run: |
+          base=creative-render/build/uc-mixed-fabrication
+          for name in source stage-one stage-two; do
+            cat > "$base/$name.axmrender" <<EOF
+          AXM_RENDER_REQUEST 1
+          scene $name.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output $name.ppm
+          EOF
+            render-fabric/build/axm-render --request "$base/$name.axmrender" --receipt "$base/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$base/$name.axmrender" "$base/$name.axmreceipt"
+          done
+
+      - name: Bind mixed fabrication lineage to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import {readFile,writeFile} from 'node:fs/promises'; import {createHash} from 'node:crypto';
+          const sha=b=>createHash('sha256').update(b).digest('hex'),base='creative-render/build/uc-mixed-fabrication/';
+          const sceneEvidenceBytes=await readFile(base+'scene-evidence.json'),sceneEvidence=JSON.parse(sceneEvidenceBytes),renders={};
+          for(const name of ['source','stage-one','stage-two']){
+            const [scene,request,receipt,frame]=await Promise.all([readFile(base+name+'.axmscene'),readFile(base+name+'.axmrender'),readFile(base+name+'.axmreceipt'),readFile(base+name+'.ppm')]);
+            renders[name]={scene_sha256:sha(scene),request_sha256:sha(request),receipt_sha256:sha(receipt),frame_sha256:sha(frame),frame_bytes:frame.length};
+          }
+          if(new Set(Object.values(renders).map(row=>row.frame_sha256)).size!==3)throw new Error('mixed fabrication proof frames are not all visually distinct in the declared fixed proof view');
+          const evidence={contract:'AXM_CREATIVE_UC_MIXED_FABRICATION_NATIVE_RENDER_EVIDENCE',version:1,scene_evidence_sha256:sha(sceneEvidenceBytes),renders,donor:sceneEvidence.observation.donor,render_receipt_replay:{source:'PASS',stage_one:'PASS',stage_two:'PASS'},authority:sceneEvidence.observation.authority,truth_boundary:{proves:'current UC v0.7 mixed same-axis hole/notch fabrication and exact resume can reach three distinct independently receipt-verified native frames without changing the root source',does_not_prove:'general CSG, cross-axis fabrication, structural/manufacturing correctness, rich attribute preservation, host-engine import, visual quality, arbitrary-camera observability or cross-machine determinism'}};
+          await writeFile(base+'native-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('uc_mixed_fabrication_native_render=PASS'); console.log(`frames=${Object.values(renders).map(r=>r.frame_sha256).join(',')}`);
+          NODE
+
+      - name: Upload complete or failed mixed-fabrication evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-uc-mixed-fabrication-native-proof
+          path: creative-render/build/uc-mixed-fabrication/
+          if-no-files-found: warn
