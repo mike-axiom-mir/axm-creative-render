@@ -1,0 +1,269 @@
+name: uc-rigid-scene-graph-native
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: uc-rigid-scene-graph-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-uc-rigid-scene-graph-native:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Universal Creation
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-universal-creation
+          ref: 1b9b6ce1feae6fdc5b1c9ffd067f81d5c39fb8a8
+          path: universal-creation
+
+      - name: Checkout pinned Render Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Use Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Prepare retained proof directory
+        run: mkdir -p creative-render/build/uc-rigid-scene-graph
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run current Universal Creation rigid scene-graph tests
+        run: python -m unittest -v universal-creation/tests/test_rigid_scene_graph.py
+
+      - name: Build one exact geometry payload and rebind only its caller-authored rigid graph
+        run: |
+          python <<'PY'
+          from __future__ import annotations
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          ROOT=Path('universal-creation').resolve()
+          sys.path.insert(0,str(ROOT/'src'))
+          from axm_uc.procedural_3d import build_glb, verify_glb
+          from axm_uc.rigid_scene_graph import rebind_rigid_scene_graph, verify_rigid_scene_graph
+
+          OUT=Path('creative-render/build/uc-rigid-scene-graph').resolve()
+          OUT.mkdir(parents=True,exist_ok=True)
+
+          def group(name,x,y):
+              return {
+                  'id':name,
+                  'positions':[[x,y,0],[x+0.28,y,0],[x,y+0.28,0]],
+                  'normals':[[0,0,1],[0,0,1],[0,0,1]],
+                  'indices':[0,1,2],
+                  'material':{'color':'#5CBCd6FF','metallic':0.2,'roughness':0.7},
+              }
+
+          surface={
+              'schema':'axm.surface-3d/v0.1',
+              'name':'Creative Render rigid graph source',
+              'primitives':[
+                  group('body',-0.92,-0.30),
+                  group('lid',-0.38,-0.10),
+                  group('keeper',0.16,-0.25),
+                  group('lever',0.68,0.02),
+              ],
+          }
+          built=build_glb(surface)
+          source_bytes=built['body']
+          source_sha=hashlib.sha256(source_bytes).hexdigest()
+          if not verify_glb(source_bytes,expected_spec_digest=built['specification_sha256'])['passed']:
+              raise RuntimeError('source GLB did not pass current UC verification')
+
+          manifest={
+              'schema':'axm.rigid-scene-graph/v0.1',
+              'nodes':[
+                  {'name':'keeper','parent':'lid','translation':[0.12,0,0]},
+                  {'name':'lid','parent':None,'translation':[0.22,0.25,0]},
+                  {'name':'lever','parent':None,'translation':[-0.16,0.18,0]},
+              ],
+          }
+          first=rebind_rigid_scene_graph(source_bytes,manifest,expected_spec_digest=built['specification_sha256'])
+          second=rebind_rigid_scene_graph(source_bytes,manifest,expected_spec_digest=built['specification_sha256'])
+          if first['body']!=second['body'] or first['manifest_sha256']!=second['manifest_sha256']:
+              raise RuntimeError('current UC rigid scene-graph rebind did not repeat byte-identically')
+          rebound_bytes=first['body']
+          verified=verify_rigid_scene_graph(rebound_bytes,expected_manifest_digest=first['manifest_sha256'])
+          if first['receipt']['binary_geometry_payload_identical'] is not True:
+              raise RuntimeError('current UC rigid scene graph did not preserve binary geometry payload')
+          if first['receipt']['triangles_before']!=4 or first['receipt']['triangles_after']!=4:
+              raise RuntimeError('current UC rigid scene graph changed triangle count')
+          if verified['parent_by_child']!={'keeper':'lid'}:
+              raise RuntimeError(f'unexpected verified parent graph: {verified!r}')
+          if hashlib.sha256(source_bytes).hexdigest()!=source_sha:
+              raise RuntimeError('source GLB identity changed in memory')
+
+          (OUT/'source.glb').write_bytes(source_bytes)
+          (OUT/'rebound.glb').write_bytes(rebound_bytes)
+          bundle={
+              'contract':'AXM_UC_RIGID_SCENE_GRAPH_DONOR_BUNDLE','version':1,
+              'donor':{
+                  'repository':'mike-axiom-mir/axm-universal-creation',
+                  'revision':'1b9b6ce1feae6fdc5b1c9ffd067f81d5c39fb8a8',
+                  'capability':'rebind_rigid_scene_graph',
+                  'graph_schema':'axm.rigid-scene-graph/v0.1',
+              },
+              'source':{
+                  'glb_sha256':source_sha,
+                  'specification_sha256':built['specification_sha256'],
+                  'unchanged_after_rebind':hashlib.sha256(source_bytes).hexdigest()==source_sha,
+              },
+              'rebound':{
+                  'glb_sha256':hashlib.sha256(rebound_bytes).hexdigest(),
+                  'manifest':first['manifest'],
+                  'manifest_sha256':first['manifest_sha256'],
+                  'receipt':first['receipt'],
+                  'verified_graph':verified,
+                  'repeat_byte_identical':first['body']==second['body'],
+              },
+          }
+          (OUT/'donor-bundle.json').write_text(json.dumps(bundle,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          print('uc_rigid_scene_graph_donor=PASS')
+          print(f'source_glb_sha256={source_sha}')
+          print(f'rebound_glb_sha256={bundle["rebound"]["glb_sha256"]}')
+          print(f'manifest_sha256={first["manifest_sha256"]}')
+          print(f'binary_chunk_sha256={first["receipt"]["binary_chunk_sha256"]}')
+          print(f'parent_edges={first["receipt"]["parent_edges"]}')
+          PY
+
+      - name: Resolve both rigid graphs into renderer-neutral world-space scenes
+        run: |
+          node creative-render/src/uc_rigid_scene_graph_cli.mjs build \
+            --bundle creative-render/build/uc-rigid-scene-graph/donor-bundle.json \
+            --source-glb creative-render/build/uc-rigid-scene-graph/source.glb \
+            --rebound-glb creative-render/build/uc-rigid-scene-graph/rebound.glb \
+            --source-scene creative-render/build/uc-rigid-scene-graph/source.axmscene \
+            --rebound-scene creative-render/build/uc-rigid-scene-graph/rebound.axmscene \
+            --receipt creative-render/build/uc-rigid-scene-graph/bridge-receipt.json
+
+      - name: Assert source authority, exact geometry identity, and inherited world transform
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { parseScene } from './creative-render/src/creative_scene_operator.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/uc-rigid-scene-graph/';
+          const [bundleBytes,receiptBytes,sourceGlb,reboundGlb,sourceScene,reboundScene]=await Promise.all([
+            readFile(base+'donor-bundle.json'),readFile(base+'bridge-receipt.json'),readFile(base+'source.glb'),readFile(base+'rebound.glb'),readFile(base+'source.axmscene'),readFile(base+'rebound.axmscene')
+          ]);
+          const b=JSON.parse(bundleBytes),r=JSON.parse(receiptBytes),o=r.bridge;
+          if(r.contract!=='AXM_CREATIVE_UC_RIGID_SCENE_GRAPH_RECEIPT'||r.version!==1)throw new Error('bridge receipt contract drifted');
+          if(o.donor.donor_revision!=='1b9b6ce1feae6fdc5b1c9ffd067f81d5c39fb8a8')throw new Error('UC donor revision drifted');
+          if(r.inputs.donor_bundle.sha256!==sha(bundleBytes)||r.inputs.source_glb.sha256!==sha(sourceGlb)||r.inputs.rebound_glb.sha256!==sha(reboundGlb))throw new Error('input byte binding drifted');
+          if(r.outputs.source_scene.sha256!==sha(sourceScene)||r.outputs.rebound_scene.sha256!==sha(reboundScene))throw new Error('scene output byte binding drifted');
+          if(o.exact_binary_geometry_payload_preserved!==true||o.source_scene.source_bin_sha256!==o.rebound_scene.source_bin_sha256)throw new Error('binary geometry continuity drifted');
+          if(o.source_preserved!==true||b.source.unchanged_after_rebind!==true)throw new Error('source authority/preservation drifted');
+          if(o.same_adapter_albedo!==true)throw new Error('adapter albedo changed across graph states');
+          if(o.source_scene.output_triangle_count!==4||o.rebound_scene.output_triangle_count!==4)throw new Error('triangle-count continuity drifted');
+          if(o.source_scene.graph_digest===o.rebound_scene.graph_digest||r.outputs.source_scene.sha256===r.outputs.rebound_scene.sha256)throw new Error('rigid graph did not change resolved scene state');
+          const child=o.rebound_scene.graph.nodes.find(row=>row.name==='keeper');
+          if(!child||child.parent!=='lid'||JSON.stringify(child.world_translation)!==JSON.stringify([0.34,0.25,0]))throw new Error(`inherited child world transform drifted: ${JSON.stringify(child)}`);
+          if(o.authority.source_glb!=='CALLER_SELECTED_READ_ONLY_SOURCE'||o.authority.rebound_glb!=='DERIVED_UC_SCENE_GRAPH_CANDIDATE')throw new Error('authority boundary drifted');
+          if(parseScene(sourceScene.toString('utf8')).triangles.length!==4||parseScene(reboundScene.toString('utf8')).triangles.length!==4)throw new Error('AXM scene parse continuity failed');
+          console.log('uc_rigid_scene_graph_lineage=PASS');
+          console.log(`source_roots=${o.source_scene.graph.roots.join(',')}`);
+          console.log(`rebound_roots=${o.rebound_scene.graph.roots.join(',')}`);
+          console.log(`keeper_world_translation=${child.world_translation.join(',')}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify source and rebound scenes
+        run: |
+          base=creative-render/build/uc-rigid-scene-graph
+          cat > "$base/source.axmrender" <<'EOF'
+          AXM_RENDER_REQUEST 1
+          scene source.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output source.ppm
+          EOF
+          cat > "$base/rebound.axmrender" <<'EOF'
+          AXM_RENDER_REQUEST 1
+          scene rebound.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output rebound.ppm
+          EOF
+          for name in source rebound; do
+            render-fabric/build/axm-render --request "$base/$name.axmrender" --receipt "$base/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$base/$name.axmrender" "$base/$name.axmreceipt"
+          done
+
+      - name: Bind caller-authored hierarchy to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile,writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/uc-rigid-scene-graph/';
+          const bridgeBytes=await readFile(base+'bridge-receipt.json');
+          const bridge=JSON.parse(bridgeBytes);
+          const renders={};
+          for(const name of ['source','rebound']){
+            const [scene,request,receipt,frame]=await Promise.all([
+              readFile(base+name+'.axmscene'),readFile(base+name+'.axmrender'),readFile(base+name+'.axmreceipt'),readFile(base+name+'.ppm')
+            ]);
+            renders[name]={scene_sha256:sha(scene),request_sha256:sha(request),receipt_sha256:sha(receipt),frame_sha256:sha(frame),frame_bytes:frame.length};
+            if(renders[name].scene_sha256!==bridge.outputs[`${name}_scene`].sha256)throw new Error(`${name} scene changed before native render binding`);
+          }
+          if(renders.source.frame_sha256===renders.rebound.frame_sha256)throw new Error('caller-authored rigid hierarchy did not change native frame bytes');
+          const evidence={
+            contract:'AXM_CREATIVE_UC_RIGID_SCENE_GRAPH_NATIVE_RENDER_EVIDENCE',version:1,
+            bridge_receipt_sha256:sha(bridgeBytes),renders,
+            donor:bridge.bridge.donor,
+            binary_geometry_payload_sha256:bridge.bridge.donor.binary_chunk_sha256,
+            render_receipt_replay:{source:'PASS',rebound:'PASS'},
+            same_adapter_albedo:bridge.bridge.same_adapter_albedo,
+            authority:bridge.bridge.authority,
+            truth_boundary:{
+              proves:'the pinned current UC rigid scene-graph rebind preserved exact binary geometry while caller-authored hierarchy/transforms changed Creative Render resolved world-space geometry and reached independently receipt-verified native Render Fabric pixels',
+              does_not_prove:'general glTF/engine import, animation, skinning, physics, collision, gameplay semantics, non-rigid transform support, rich material preservation, visual quality, real-time performance, or cross-machine bitwise determinism'
+            }
+          };
+          await writeFile(base+'native-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('uc_rigid_scene_graph_native_render=PASS');
+          console.log(`source_frame_sha256=${renders.source.frame_sha256}`);
+          console.log(`rebound_frame_sha256=${renders.rebound.frame_sha256}`);
+          NODE
+
+      - name: Upload complete rigid scene-graph native proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-uc-rigid-scene-graph-native-proof
+          path: creative-render/build/uc-rigid-scene-graph/
