@@ -1,0 +1,206 @@
+name: direct-sample-morph-bridge
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: direct-sample-morph-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-direct-sample-morph:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned Universal Creation donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-universal-creation
+          ref: c89839485a6d09a3e70dbd633c5f1292348f37b1
+          path: universal-creation
+
+      - name: Checkout pinned Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: bed7e20374e27b8a6edc1772c606232b196a5869
+          path: visual-effect-fabric
+
+      - name: Checkout pinned Render Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Sample two real Universal Creation animation states
+        run: |
+          node creative-render/src/temporal_cli.mjs sample \
+            --uc-root universal-creation \
+            --out-dir creative-render/build/state-morph-source \
+            --receipt creative-render/build/state-morph-source/temporal.receipt.json \
+            --times 0,2
+
+      - name: Assert two distinct pinned source states
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          const receipt=JSON.parse(await readFile('creative-render/build/state-morph-source/temporal.receipt.json','utf8'));
+          if(receipt.contract!=='AXM_CREATIVE_TEMPORAL_RECEIPT'||receipt.version!==1)throw new Error('temporal source receipt drifted');
+          if(receipt.repeat_verification!=='PASS')throw new Error('temporal source repeat verification failed');
+          if(receipt.observation.hand_count!==501||receipt.observation.recipe_count!==508)throw new Error('UC public creative census drifted');
+          if(receipt.observation.sample_count!==2||receipt.observation.distinct_scene_count!==2)throw new Error('state-morph source states are not two distinct samples');
+          if(receipt.outputs[0].scene_sha256===receipt.outputs[1].scene_sha256)throw new Error('state-morph endpoints have identical scene identity');
+          console.log('state_morph_sources=PASS');
+          console.log(`source_sha256=${receipt.outputs[0].scene_sha256}`);
+          console.log(`target_sha256=${receipt.outputs[1].scene_sha256}`);
+          NODE
+
+      - name: Execute real Visual Effect Fabric state morph
+        run: |
+          mkdir -p creative-render/build/state-morph
+          node creative-render/src/direct_sample_morph_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --source-scene creative-render/build/state-morph-source/frame-000.axmscene \
+            --target-scene creative-render/build/state-morph-source/frame-001.axmscene \
+            --state creative-render/build/state-morph/morph-state.json \
+            --html creative-render/build/state-morph/morph.html \
+            --receipt creative-render/build/state-morph/morph.receipt.json
+
+      - name: Assert state-morph identity and pairing evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const [receiptBytes,stateBytes,htmlBytes,temporalBytes]=await Promise.all([
+            readFile('creative-render/build/state-morph/morph.receipt.json'),
+            readFile('creative-render/build/state-morph/morph-state.json'),
+            readFile('creative-render/build/state-morph/morph.html'),
+            readFile('creative-render/build/state-morph-source/temporal.receipt.json'),
+          ]);
+          const receipt=JSON.parse(receiptBytes.toString('utf8'));
+          const temporal=JSON.parse(temporalBytes.toString('utf8'));
+          if(receipt.contract!=='AXM_CREATIVE_DIRECT_SAMPLE_MORPH_RECEIPT'||receipt.version!==1)throw new Error('state-morph receipt drifted');
+          if(receipt.source.scene.sha256!==temporal.outputs[0].scene_sha256)throw new Error('morph source identity drifted from UC sample');
+          if(receipt.target.scene.sha256!==temporal.outputs[1].scene_sha256)throw new Error('morph target identity drifted from UC sample');
+          if(receipt.source.scene.sha256===receipt.target.scene.sha256)throw new Error('morph endpoints are not distinct');
+          if(receipt.source.adapter.source_triangle_count!==12||receipt.target.adapter.source_triangle_count!==12)throw new Error('pinned endpoint triangle count drifted');
+          if(receipt.source.adapter.point_count!==324||receipt.target.adapter.point_count!==324)throw new Error('pinned endpoint sample count drifted');
+          const vfx=receipt.visual_effect_fabric;
+          if(vfx.graph_id!=='fx.holographic-state-morph')throw new Error('wrong VFX morph graph');
+          if(vfx.renderer!=='axm.vfx.holographic-state-morph/v0.1')throw new Error('wrong VFX morph renderer');
+          if(vfx.morph.pairing!=='deterministic-spatial-order-v0.1')throw new Error('morph pairing policy drifted');
+          if(vfx.morph.source_digest!==receipt.source.scene.sha256||vfx.morph.target_digest!==receipt.target.scene.sha256)throw new Error('VFX morph lost endpoint identities');
+          if(vfx.morph.point_count!==324)throw new Error('pinned morph point count drifted');
+          if(vfx.repeat_verification!=='PASS')throw new Error('state-morph repeat verification failed');
+          if(vfx.truth_boundary.semantic_correspondence_proven!==false)throw new Error('semantic correspondence truth boundary drifted');
+          if(receipt.outputs.morph_state.sha256!==sha(stateBytes)||receipt.outputs.morph_html.sha256!==sha(htmlBytes))throw new Error('morph output hashes drifted');
+          console.log('state_morph_vfx=PASS');
+          console.log(`morph_final_state_hash=${vfx.final_state_hash}`);
+          console.log(`morph_html_sha256=${receipt.outputs.morph_html.sha256}`);
+          NODE
+
+      - name: Build and test pinned Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and receipt-verify source endpoint
+        run: |
+          render-fabric/build/axm-render \
+            --request creative-render/build/state-morph-source/frame-000.axmrender \
+            --receipt creative-render/build/state-morph-source/frame-000.axmreceipt
+          render-fabric/build/axm-render-verify-receipt \
+            creative-render/build/state-morph-source/frame-000.axmrender \
+            creative-render/build/state-morph-source/frame-000.axmreceipt
+
+      - name: Render and receipt-verify target endpoint
+        run: |
+          render-fabric/build/axm-render \
+            --request creative-render/build/state-morph-source/frame-001.axmrender \
+            --receipt creative-render/build/state-morph-source/frame-001.axmreceipt
+          render-fabric/build/axm-render-verify-receipt \
+            creative-render/build/state-morph-source/frame-001.axmrender \
+            creative-render/build/state-morph-source/frame-001.axmreceipt
+
+      - name: Bind both native endpoints and VFX morph to exact source identities
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const sourceBase='creative-render/build/state-morph-source/';
+          const morphBase='creative-render/build/state-morph/';
+          const [morphReceiptBytes,sourceScene,targetScene,sourceRequest,targetRequest,sourceRenderReceipt,targetRenderReceipt,sourceFrame,targetFrame,morphState,morphHtml]=await Promise.all([
+            readFile(morphBase+'morph.receipt.json'),
+            readFile(sourceBase+'frame-000.axmscene'), readFile(sourceBase+'frame-001.axmscene'),
+            readFile(sourceBase+'frame-000.axmrender'), readFile(sourceBase+'frame-001.axmrender'),
+            readFile(sourceBase+'frame-000.axmreceipt'), readFile(sourceBase+'frame-001.axmreceipt'),
+            readFile(sourceBase+'frame-000.ppm'), readFile(sourceBase+'frame-001.ppm'),
+            readFile(morphBase+'morph-state.json'), readFile(morphBase+'morph.html'),
+          ]);
+          const morph=JSON.parse(morphReceiptBytes.toString('utf8'));
+          const sourceSha=sha(sourceScene),targetSha=sha(targetScene);
+          if(morph.source.scene.sha256!==sourceSha||morph.target.scene.sha256!==targetSha)throw new Error('final state-morph source continuity failed');
+          const evidence={
+            contract:'AXM_CREATIVE_DIRECT_SAMPLE_MORPH_RENDER_EVIDENCE',
+            version:1,
+            source_scene_sha256:sourceSha,
+            target_scene_sha256:targetSha,
+            source_render_request_sha256:sha(sourceRequest),
+            target_render_request_sha256:sha(targetRequest),
+            source_render_receipt_sha256:sha(sourceRenderReceipt),
+            target_render_receipt_sha256:sha(targetRenderReceipt),
+            source_render_frame_sha256:sha(sourceFrame),
+            target_render_frame_sha256:sha(targetFrame),
+            morph_receipt_sha256:sha(morphReceiptBytes),
+            morph_state_sha256:sha(morphState),
+            morph_html_sha256:sha(morphHtml),
+            render_receipt_replay:'PASS-executed-for-both-endpoints-before-binding',
+            morph_renderer:morph.visual_effect_fabric.renderer,
+            morph_pairing:morph.visual_effect_fabric.morph.pairing,
+            authority:{
+              source_scene:'AXM_SCENE_1_CALLER_STATE',
+              target_scene:'AXM_SCENE_1_CALLER_STATE',
+              native_endpoint_pixels:'DERIVED_RENDER_FABRIC_OUTPUT',
+              morph_field:'DERIVED_VFX_WORKING_STATE',
+              morph_html:'DERIVED_VFX_REALIZATION',
+            },
+            truth_boundary:{
+              proves:'two exact distinct AXM scene identities independently survive native receipt-verified rendering and one derived deterministic VFX state-morph body',
+              does_not_prove:'semantic correspondence, topology-aware deformation, skeletal interpolation, material preservation, visual quality, browser execution, physical morphing or cross-machine determinism',
+            },
+          };
+          await writeFile(morphBase+'morph-render-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('state_morph_render_binding=PASS');
+          console.log(`source_frame_sha256=${evidence.source_render_frame_sha256}`);
+          console.log(`target_frame_sha256=${evidence.target_render_frame_sha256}`);
+          console.log(`morph_html_sha256=${evidence.morph_html_sha256}`);
+          NODE
+
+      - name: Upload complete state-morph proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-direct-sample-morph-proof
+          path: |
+            creative-render/build/state-morph-source/
+            creative-render/build/state-morph/
