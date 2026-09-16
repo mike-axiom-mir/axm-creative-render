@@ -36,6 +36,13 @@ function sha256Hex(value, label) {
   return value;
 }
 
+function gitRevisionHex(value, label) {
+  if (typeof value !== "string" || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value)) {
+    throw new Error(`${label} must be a full lowercase Git object id`);
+  }
+  return value;
+}
+
 export function validateUcSurface(surface, label = "UC surface") {
   object(surface, label);
   if (surface.schema !== SURFACE_SCHEMA) {
@@ -132,7 +139,7 @@ export function verifyOrientedCutDonorBundle(bundle) {
   }
   const donor = object(bundle.donor, "donor identity");
   if (donor.repository !== "mike-axiom-mir/axm-universal-creation") throw new Error("unexpected oriented-cut donor repository");
-  sha256Hex(donor.revision, "donor revision");
+  gitRevisionHex(donor.revision, "donor revision");
   if (donor.public_route !== "mesh-laser-oriented-hole") throw new Error("oriented-cut proof must exercise the public machine route");
 
   const source = object(bundle.source, "oriented-cut source");
