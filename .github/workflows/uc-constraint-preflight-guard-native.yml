@@ -1,0 +1,185 @@
+name: uc-constraint-preflight-guard-native
+
+on:
+  pull_request:
+    paths:
+      - 'src/uc_constraint_preflight_guard_native_bridge.mjs'
+      - 'src/uc_constraint_preflight_guard_native_cli.mjs'
+      - 'tests/uc_constraint_preflight_guard_native_bridge.test.mjs'
+      - '.github/workflows/uc-constraint-preflight-guard-native.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/uc_constraint_preflight_guard_native_bridge.mjs'
+      - 'src/uc_constraint_preflight_guard_native_cli.mjs'
+      - 'tests/uc_constraint_preflight_guard_native_bridge.test.mjs'
+      - '.github/workflows/uc-constraint-preflight-guard-native.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-current-uc-constraint-preflight-guard-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Universal Creation
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-universal-creation
+          ref: ecef151548736628cff62652a36be6eb1c7b1ad6
+          path: universal-creation
+
+      - name: Checkout pinned Render Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Prepare retained proof directory
+        run: |
+          mkdir -p creative-render/build/uc-constraint-preflight-guard-native
+          cat > creative-render/build/uc-constraint-preflight-guard-native/donor-revisions.json <<'EOF'
+          {
+            "universal_creation": "ecef151548736628cff62652a36be6eb1c7b1ad6",
+            "render_fabric": "6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b"
+          }
+          EOF
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Verify retained UC composer, preflight and fail-closed guard
+        run: |
+          node universal-creation/capabilities/physics-core/constraint-composer-selftest.js
+          node universal-creation/capabilities/physics-core/constraint-preflight-selftest.js
+          node universal-creation/capabilities/physics-core/constraint-preflight-guard-selftest.js
+
+      - name: Build constraint preflight guard proof
+        run: |
+          base=creative-render/build/uc-constraint-preflight-guard-native
+          node creative-render/src/uc_constraint_preflight_guard_native_cli.mjs build \
+            --uc-root universal-creation \
+            --uc-revision ecef151548736628cff62652a36be6eb1c7b1ad6 \
+            --source-scene "$base/source.axmscene" \
+            --blocked-scene "$base/blocked.axmscene" \
+            --accepted-scene "$base/accepted.axmscene" \
+            --receipt "$base/constraint-preflight-guard.receipt.json"
+
+      - name: Independently assert authority, block and delegation evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { parseScene } from './creative-render/src/creative_scene_operator.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/uc-constraint-preflight-guard-native/';
+          const [receiptBytes,sourceScene,blockedScene,acceptedScene]=await Promise.all([
+            readFile(base+'constraint-preflight-guard.receipt.json'),readFile(base+'source.axmscene'),
+            readFile(base+'blocked.axmscene'),readFile(base+'accepted.axmscene')
+          ]);
+          const receipt=JSON.parse(receiptBytes.toString('utf8'));
+          if(receipt.contract!=='AXM_CREATIVE_UC_CONSTRAINT_PREFLIGHT_GUARD_NATIVE_RECEIPT'||receipt.version!==1)throw new Error('preflight guard receipt contract drifted');
+          if(receipt.donor.revision!=='ecef151548736628cff62652a36be6eb1c7b1ad6'||receipt.donor.preflight_guard_version!=='0.1.0'||receipt.donor.preflight_guard_step_schema!=='axm.uc-constraint-preflight-guard-step/v0.1')throw new Error('current UC preflight guard donor was not exercised');
+          if(receipt.caller_authority.source_state_mutated!==false||receipt.caller_authority.requests_mutated!==false||receipt.caller_authority.guard_is_opt_in!==true)throw new Error('caller authority boundary failed');
+          if(receipt.blocked_branch.accepted!==false||receipt.blocked_branch.blocked!==true||receipt.blocked_branch.reason!=='PROVABLE_LOCAL_CONFLICT')throw new Error('provable conflict was not blocked');
+          if(receipt.blocked_branch.core_step_executed!==false||receipt.blocked_branch.composer_present!==false||receipt.blocked_branch.proven_conflict_count!==1||receipt.blocked_branch.world_unchanged!==true)throw new Error('blocked zero-step evidence drifted');
+          if(receipt.blocked_branch.world_checksum_before!==receipt.blocked_branch.world_checksum_after||receipt.blocked_branch.repeat_verification!=='PASS')throw new Error('blocked continuity/replay evidence drifted');
+          if(receipt.invalid_branch.blocked!==true||receipt.invalid_branch.reason!=='INVALID_CONSTRAINTS'||receipt.invalid_branch.core_step_executed!==false||receipt.invalid_branch.missing_body_rejected!==true||receipt.invalid_branch.world_unchanged!==true)throw new Error('invalid constraint fail-closed evidence drifted');
+          if(receipt.accepted_branch.accepted!==true||receipt.accepted_branch.blocked!==false||receipt.accepted_branch.reason!=='ACCEPTED'||receipt.accepted_branch.core_step_executed!==true||receipt.accepted_branch.proven_conflict_count!==0)throw new Error('accepted delegation evidence drifted');
+          if(receipt.accepted_branch.direct_composer_world_equivalent!==true||receipt.accepted_branch.direct_composer_receipt_equivalent!==true||receipt.accepted_branch.repeat_verification!=='PASS')throw new Error('accepted path no longer matches direct composer behavior');
+          if(receipt.unsupported_distance_branch.accepted!==true||receipt.unsupported_distance_branch.core_step_executed!==true||receipt.unsupported_distance_branch.unsupported_constraint_count!==1||receipt.unsupported_distance_branch.proven_conflict_count!==0||receipt.unsupported_distance_branch.unsupported_not_misclassified_as_conflict!==true)throw new Error('unsupported distance boundary drifted');
+          if(receipt.outputs.source_scene.sha256!==sha(sourceScene)||receipt.outputs.blocked_scene.sha256!==sha(blockedScene)||receipt.outputs.accepted_scene.sha256!==sha(acceptedScene))throw new Error('derived scene byte lineage drifted');
+          if(sha(sourceScene)!==sha(blockedScene)||receipt.outputs.source_and_blocked_scenes_identical!==true)throw new Error('blocked branch invented visual state');
+          if(sha(sourceScene)===sha(acceptedScene)||receipt.outputs.source_and_accepted_scenes_differ!==true)throw new Error('accepted branch failed to create observable derived state');
+          for(const bytes of [sourceScene,blockedScene,acceptedScene]){
+            const scene=parseScene(bytes.toString('utf8'));
+            if(scene.triangles.length!==4)throw new Error('bounded preflight-guard render adapter triangle count drifted');
+            if(JSON.stringify(scene.triangles[0].albedo)!==JSON.stringify([90,110,145])||JSON.stringify(scene.triangles[2].albedo)!==JSON.stringify([224,166,72]))throw new Error('preflight-guard render adapter albedo drifted');
+          }
+          const evidence={
+            contract:'AXM_CREATIVE_UC_CONSTRAINT_PREFLIGHT_GUARD_INDEPENDENT_EVIDENCE',version:1,
+            creative_receipt_sha256:sha(receiptBytes),source_scene_sha256:sha(sourceScene),blocked_scene_sha256:sha(blockedScene),accepted_scene_sha256:sha(acceptedScene),
+            gates:{caller_authority:'PASS',provable_conflict_zero_step_block:'PASS',invalid_constraints_zero_step_block:'PASS',blocked_visual_noop:'PASS',accepted_direct_composer_equivalence:'PASS',unsupported_distance_delegation:'PASS',same_runtime_repeat:'PASS'}
+          };
+          await writeFile(base+'independent-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('uc_constraint_preflight_guard_independent_evidence=PASS');
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify all preflight observations
+        run: |
+          base=creative-render/build/uc-constraint-preflight-guard-native
+          for name in source blocked accepted; do
+            cat > "$base/$name.axmrender" <<EOF
+          AXM_RENDER_REQUEST 1
+          scene $name.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output $name.ppm
+          EOF
+            render-fabric/build/axm-render --request "$base/$name.axmrender" --receipt "$base/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$base/$name.axmrender" "$base/$name.axmreceipt"
+          done
+
+      - name: Bind fail-closed and accepted choices to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile,writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/uc-constraint-preflight-guard-native/';
+          const receiptBytes=await readFile(base+'constraint-preflight-guard.receipt.json');
+          const receipt=JSON.parse(receiptBytes.toString('utf8'));
+          const names=['source','blocked','accepted'];
+          const renders={};
+          for(const name of names){
+            const [scene,frame,renderReceipt]=await Promise.all([readFile(base+name+'.axmscene'),readFile(base+name+'.ppm'),readFile(base+name+'.axmreceipt')]);
+            renders[name]={scene_sha256:sha(scene),frame_sha256:sha(frame),receipt_sha256:sha(renderReceipt)};
+          }
+          if(renders.source.frame_sha256!==renders.blocked.frame_sha256)throw new Error('blocked zero-step branch invented native pixel change');
+          if(renders.source.frame_sha256===renders.accepted.frame_sha256)throw new Error('accepted delegated branch did not reach distinct native pixels');
+          const evidence={
+            contract:'AXM_CREATIVE_UC_CONSTRAINT_PREFLIGHT_GUARD_NATIVE_RENDER_EVIDENCE',version:1,
+            creative_receipt_sha256:sha(receiptBytes),uc_revision:receipt.donor.revision,preflight_guard_version:receipt.donor.preflight_guard_version,
+            renders,render_receipt_replay:{source:'PASS',blocked:'PASS',accepted:'PASS'},
+            observed_native_identity:{source_equals_blocked:true,source_differs_from_accepted:true},
+            authority:{source_world_and_constraint_requests:'CALLER_AUTHORITATIVE',guard_decisions_and_accepted_world:'DERIVED_UC_EVIDENCE',scenes:'DERIVED_REPLACEABLE_OBSERVATIONS',pixels:'DERIVED_RENDER_FABRIC_OUTPUT'},
+            truth_boundary:{
+              proves:'current UC preflight guard can stop a locally proven conflict before donor integration without inventing state or pixels, while a conflict-free request delegates exactly to the existing composer and reaches independently receipt-verified native pixels',
+              does_not_prove:'global satisfiability, convergence, stability, nonlinear distance-conflict detection, general collision correctness, scientific validity, gameplay correctness or aesthetic quality'
+            }
+          };
+          await writeFile(base+'native-render-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('uc_constraint_preflight_guard_native_render=PASS');
+          console.log(`source_frame_sha256=${renders.source.frame_sha256}`);
+          console.log(`blocked_frame_sha256=${renders.blocked.frame_sha256}`);
+          console.log(`accepted_frame_sha256=${renders.accepted.frame_sha256}`);
+          NODE
+
+      - name: Upload retained constraint preflight guard proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-uc-constraint-preflight-guard-native-proof
+          path: creative-render/build/uc-constraint-preflight-guard-native/
+          if-no-files-found: warn
