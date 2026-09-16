@@ -1,0 +1,197 @@
+name: vfx-surface-native-roundtrip
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vfx-surface-native-roundtrip-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-vfx-surface-native-roundtrip:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Universal Creation donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-universal-creation
+          ref: f7dd18a7ee88d9e623c7ee20b2ca97613c37506c
+          path: universal-creation
+
+      - name: Checkout pinned current Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: 158f78214e5f98214837978ac5dd29852cc64d89
+          path: visual-effect-fabric
+
+      - name: Checkout pinned Render Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Build VFX triangle surface and renderer-consumable derived scene
+        run: |
+          mkdir -p creative-render/build/vfx-surface-roundtrip
+          node creative-render/src/vfx_surface_roundtrip_cli.mjs build \
+            --uc-root universal-creation \
+            --vfx-root visual-effect-fabric \
+            --source-scene creative-render/build/vfx-surface-roundtrip/source.axmscene \
+            --surface-scene creative-render/build/vfx-surface-roundtrip/surface.axmscene \
+            --state creative-render/build/vfx-surface-roundtrip/vfx-state.json \
+            --html creative-render/build/vfx-surface-roundtrip/vfx-surface.html \
+            --receipt creative-render/build/vfx-surface-roundtrip/roundtrip.receipt.json
+
+      - name: Assert VFX geometry lineage before rendering
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { parseScene } from './creative-render/src/creative_scene_operator.mjs';
+          const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-surface-roundtrip/';
+          const [receiptBytes,sourceBytes,surfaceBytes,stateBytes,htmlBytes]=await Promise.all([
+            readFile(base+'roundtrip.receipt.json'),readFile(base+'source.axmscene'),readFile(base+'surface.axmscene'),
+            readFile(base+'vfx-state.json'),readFile(base+'vfx-surface.html'),
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          if(r.contract!=='AXM_CREATIVE_VFX_SURFACE_ROUNDTRIP_RECEIPT'||r.version!==1)throw new Error('roundtrip receipt drifted');
+          if(r.universal_creation.flow_status!=='PASS')throw new Error('current UC Creative Flow did not pass');
+          if(r.universal_creation.hand_count<501||r.universal_creation.recipe_count<508)throw new Error('current UC creative surface unexpectedly shrank');
+          if(r.outputs.source_scene.sha256!==sha(sourceBytes))throw new Error('source scene bytes not bound');
+          if(r.outputs.surface_scene.sha256!==sha(surfaceBytes))throw new Error('surface scene bytes not bound');
+          if(r.outputs.vfx_state.sha256!==sha(stateBytes)||r.outputs.vfx_html.sha256!==sha(htmlBytes))throw new Error('VFX state/HTML bytes not bound');
+          if(r.direct_sample.source_scene_sha256!==r.outputs.source_scene.sha256)throw new Error('direct-sample source identity drifted');
+          if(r.visual_effect_fabric.source_digest!==r.outputs.source_scene.sha256)throw new Error('VFX source identity drifted');
+          if(r.visual_effect_fabric.renderer!=='axm.vfx.holographic-voxel-surface/v0.6')throw new Error('VFX voxel-surface renderer drifted');
+          if(r.visual_effect_fabric.voxel.schema!=='axm.holographic-voxel-density/v0.1'||r.visual_effect_fabric.voxel.derived!==true||r.visual_effect_fabric.voxel.rebuildable!==true)throw new Error('voxel state boundary drifted');
+          if(r.visual_effect_fabric.surface.schema!=='axm.holographic-triangle-surface/v0.1'||r.visual_effect_fabric.surface.derived!==true||r.visual_effect_fabric.surface.rebuildable!==true)throw new Error('surface state boundary drifted');
+          if(r.surface_to_scene.source_surface_digest!==r.visual_effect_fabric.surface.digest)throw new Error('surface adapter lost mesh identity');
+          if(r.surface_to_scene.source_voxel_digest!==r.visual_effect_fabric.voxel.digest)throw new Error('surface adapter lost voxel identity');
+          if(r.surface_to_scene.normals_preserved!==false||r.surface_to_scene.topology_semantics_preserved!==false)throw new Error('lossy adapter truth boundary drifted');
+          const source=parseScene(sourceBytes.toString('utf8')),surface=parseScene(surfaceBytes.toString('utf8'));
+          if(surface.triangles.length!==r.visual_effect_fabric.surface.triangle_count)throw new Error('derived scene triangle count does not match VFX mesh');
+          if(surface.triangles.length!==r.surface_to_scene.output_triangle_count)throw new Error('surface adapter triangle count drifted');
+          if(surface.triangles.length<1||surface.triangles.length>12000)throw new Error('derived scene triangle bound failed');
+          if(sha(sourceBytes)===sha(surfaceBytes))throw new Error('derived VFX surface scene unexpectedly equals source bytes');
+          console.log('vfx_geometry_lineage=PASS');
+          console.log(`uc_hands=${r.universal_creation.hand_count}`);
+          console.log(`uc_recipes=${r.universal_creation.recipe_count}`);
+          console.log(`source_triangles=${source.triangles.length}`);
+          console.log(`sample_points=${r.direct_sample.point_count}`);
+          console.log(`voxel_resolution=${r.visual_effect_fabric.voxel.resolution}`);
+          console.log(`surface_triangles=${surface.triangles.length}`);
+          console.log(`surface_mesh_digest=${r.visual_effect_fabric.surface.digest}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and verify original source scene
+        run: |
+          cat > creative-render/build/vfx-surface-roundtrip/source.axmrender <<'EOF'
+          # AXM Creative Render v0.14 original source render.
+          AXM_RENDER_REQUEST 1
+          scene source.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output source.ppm
+          EOF
+          render-fabric/build/axm-render \
+            --request creative-render/build/vfx-surface-roundtrip/source.axmrender \
+            --receipt creative-render/build/vfx-surface-roundtrip/source.axmreceipt
+          render-fabric/build/axm-render-verify-receipt \
+            creative-render/build/vfx-surface-roundtrip/source.axmrender \
+            creative-render/build/vfx-surface-roundtrip/source.axmreceipt
+
+      - name: Render and verify VFX-derived triangle surface scene
+        run: |
+          cat > creative-render/build/vfx-surface-roundtrip/surface.axmrender <<'EOF'
+          # AXM Creative Render v0.14 VFX-derived triangle-surface render.
+          AXM_RENDER_REQUEST 1
+          scene surface.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output surface.ppm
+          EOF
+          render-fabric/build/axm-render \
+            --request creative-render/build/vfx-surface-roundtrip/surface.axmrender \
+            --receipt creative-render/build/vfx-surface-roundtrip/surface.axmreceipt
+          render-fabric/build/axm-render-verify-receipt \
+            creative-render/build/vfx-surface-roundtrip/surface.axmrender \
+            creative-render/build/vfx-surface-roundtrip/surface.axmreceipt
+
+      - name: Bind derived VFX geometry to native renderer evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile,writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-surface-roundtrip/';
+          const [roundtripBytes,sourceScene,surfaceScene,sourceReq,sourceReceipt,sourceFrame,surfaceReq,surfaceReceipt,surfaceFrame]=await Promise.all([
+            readFile(base+'roundtrip.receipt.json'),readFile(base+'source.axmscene'),readFile(base+'surface.axmscene'),
+            readFile(base+'source.axmrender'),readFile(base+'source.axmreceipt'),readFile(base+'source.ppm'),
+            readFile(base+'surface.axmrender'),readFile(base+'surface.axmreceipt'),readFile(base+'surface.ppm'),
+          ]);
+          const r=JSON.parse(roundtripBytes.toString('utf8'));
+          if(r.outputs.source_scene.sha256!==sha(sourceScene)||r.outputs.surface_scene.sha256!==sha(surfaceScene))throw new Error('roundtrip scene identity changed before render binding');
+          if(sha(sourceFrame)===sha(surfaceFrame))throw new Error('VFX-derived geometry rendered identical frame bytes to source scene');
+          const evidence={
+            contract:'AXM_CREATIVE_VFX_SURFACE_NATIVE_RENDER_EVIDENCE',version:1,
+            source_scene_sha256:sha(sourceScene),surface_scene_sha256:sha(surfaceScene),
+            roundtrip_receipt_sha256:sha(roundtripBytes),
+            source_render_request_sha256:sha(sourceReq),source_render_receipt_sha256:sha(sourceReceipt),source_frame_sha256:sha(sourceFrame),
+            surface_render_request_sha256:sha(surfaceReq),surface_render_receipt_sha256:sha(surfaceReceipt),surface_frame_sha256:sha(surfaceFrame),
+            surface_mesh_digest:r.visual_effect_fabric.surface.digest,voxel_digest:r.visual_effect_fabric.voxel.digest,
+            render_receipt_replay:{source:'PASS-executed-before-binding',surface:'PASS-executed-before-binding'},
+            authority:{
+              source_scene:'AXM_SCENE_1_CALLER_STATE',
+              vfx_voxel_and_surface:'DERIVED_REBUILDABLE_VFX_RENDER_STATE',
+              surface_scene:'DERIVED_ADAPTER_STATE',
+              source_pixels:'DERIVED_RENDER_FABRIC_OUTPUT',
+              surface_pixels:'DERIVED_RENDER_FABRIC_OUTPUT',
+            },
+            truth_boundary:{
+              proves:'a real VFX-derived triangle surface can cross an explicit lossy adapter and become independently receipt-verified pixels in the owned native renderer while source identity remains separately bound',
+              does_not_prove:'semantic topology recovery, source mesh equivalence, normal/material/UV preservation, visual quality, game-world correctness, performance superiority or cross-machine determinism',
+            },
+          };
+          await writeFile(base+'native-roundtrip-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_surface_native_roundtrip=PASS');
+          console.log(`source_frame_sha256=${evidence.source_frame_sha256}`);
+          console.log(`surface_frame_sha256=${evidence.surface_frame_sha256}`);
+          console.log(`surface_mesh_digest=${evidence.surface_mesh_digest}`);
+          NODE
+
+      - name: Upload complete VFX surface native roundtrip proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-surface-native-roundtrip-proof
+          path: creative-render/build/vfx-surface-roundtrip/
