@@ -1,0 +1,188 @@
+name: vfx-field-composition-native
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vfx-field-composition-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-vfx-field-composition-native:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: 33c444bc2569cba63123ee1ef4d074f80654c225
+          path: visual-effect-fabric
+
+      - name: Checkout pinned Render Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Execute two real VFX field compositions into derived renderer scenes
+        run: |
+          mkdir -p creative-render/build/vfx-field-composition
+          node creative-render/src/vfx_field_composition_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --multiply-scene creative-render/build/vfx-field-composition/multiply.axmscene \
+            --add-scene creative-render/build/vfx-field-composition/add-clamp.axmscene \
+            --multiply-state creative-render/build/vfx-field-composition/multiply-state.json \
+            --add-state creative-render/build/vfx-field-composition/add-clamp-state.json \
+            --receipt creative-render/build/vfx-field-composition/composition.receipt.json
+
+      - name: Assert source, composition, derived-grid and adapter boundaries
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { parseScene } from './creative-render/src/creative_scene_operator.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-field-composition/';
+          const [receiptBytes,mulSceneBytes,addSceneBytes,mulStateBytes,addStateBytes]=await Promise.all([
+            readFile(base+'composition.receipt.json'),readFile(base+'multiply.axmscene'),readFile(base+'add-clamp.axmscene'),
+            readFile(base+'multiply-state.json'),readFile(base+'add-clamp-state.json'),
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          if(r.contract!=='AXM_CREATIVE_VFX_FIELD_COMPOSITION_RECEIPT'||r.version!==1)throw new Error('composition receipt drifted');
+          if(r.shared_inputs.source_modules_identical_across_runs!==true)throw new Error('donor module identity changed across composition runs');
+          const m=r.multiply.visual_effect_fabric,a=r.add_clamp.visual_effect_fabric;
+          if(m.graph_id!=='fx.field.compose2d'||a.graph_id!=='fx.field.compose2d'||m.graph_version!=='0.1.0'||a.graph_version!=='0.1.0')throw new Error('current VFX composition graph was not exercised');
+          if(m.donor_graph_reused!==true||a.donor_graph_reused!==true||m.repeat_verification!=='PASS'||a.repeat_verification!=='PASS')throw new Error('VFX donor graph repeat gate failed');
+          if(m.input_a.source_hash!==a.input_a.source_hash||m.input_b.source_hash!==a.input_b.source_hash)throw new Error('canonical input fields changed across operation challenge');
+          if(m.composition_source.operation!=='multiply'||a.composition_source.operation!=='add-clamp')throw new Error('composition operation challenge drifted');
+          if(m.composition_source.source_hash===a.composition_source.source_hash)throw new Error('composition identity did not change');
+          if(m.grid.field_hash===a.grid.field_hash)throw new Error('derived grid identity did not change');
+          for(const row of [m,a]){
+            if(row.grid.schema!=='axm.scalar-field-composed-grid/v0.1'||row.grid.derived!==true||row.grid.rebuildable!==true)throw new Error('derived grid truth boundary drifted');
+            if(row.grid.cells<16||row.grid.cells>4096)throw new Error('derived grid outside Creative Render scene-adapter budget');
+            if(row.truth_boundary.consumer_semantics_proven!==false||row.truth_boundary.aesthetic_quality_proven!==false)throw new Error('VFX truth boundary was promoted');
+          }
+          if(r.outputs.multiply_scene.sha256!==sha(mulSceneBytes)||r.outputs.add_clamp_scene.sha256!==sha(addSceneBytes))throw new Error('derived scene bytes not bound');
+          if(r.outputs.multiply_state.sha256!==sha(mulStateBytes)||r.outputs.add_clamp_state.sha256!==sha(addStateBytes))throw new Error('donor final-state bytes not bound');
+          if(sha(mulSceneBytes)===sha(addSceneBytes))throw new Error('different composed grids produced identical scene bytes');
+          const mul=parseScene(mulSceneBytes.toString('utf8')),add=parseScene(addSceneBytes.toString('utf8'));
+          if(mul.triangles.length!==add.triangles.length||mul.triangles.length!==m.grid.cells*2)throw new Error('derived scene topology budget drifted');
+          if(r.multiply.grid_to_scene.source_grid_hash!==m.grid.field_hash||r.add_clamp.grid_to_scene.source_grid_hash!==a.grid.field_hash)throw new Error('grid-to-scene lineage drifted');
+          if(r.multiply.grid_to_scene.albedo_encodes_scalar_values!==true||r.multiply.grid_to_scene.geometry_encodes_scalar_values!==false)throw new Error('adapter encoding policy drifted');
+          console.log('vfx_field_composition_lineage=PASS');
+          console.log(`input_a_hash=${m.input_a.source_hash}`);
+          console.log(`input_b_hash=${m.input_b.source_hash}`);
+          console.log(`multiply_composition_hash=${m.composition_source.source_hash}`);
+          console.log(`add_clamp_composition_hash=${a.composition_source.source_hash}`);
+          console.log(`multiply_grid_hash=${m.grid.field_hash}`);
+          console.log(`add_clamp_grid_hash=${a.grid.field_hash}`);
+          console.log(`grid_cells=${m.grid.cells}`);
+          console.log(`scene_triangles=${mul.triangles.length}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify both derived compositions
+        run: |
+          base=creative-render/build/vfx-field-composition
+          cat > "$base/multiply.axmrender" <<'EOF'
+          AXM_RENDER_REQUEST 1
+          scene multiply.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output multiply.ppm
+          EOF
+          cat > "$base/add-clamp.axmrender" <<'EOF'
+          AXM_RENDER_REQUEST 1
+          scene add-clamp.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output add-clamp.ppm
+          EOF
+          for name in multiply add-clamp; do
+            render-fabric/build/axm-render --request "$base/$name.axmrender" --receipt "$base/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$base/$name.axmrender" "$base/$name.axmreceipt"
+          done
+
+      - name: Bind neutral field composition to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile,writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-field-composition/';
+          const receiptBytes=await readFile(base+'composition.receipt.json');
+          const receipt=JSON.parse(receiptBytes.toString('utf8'));
+          const rows={};
+          for(const name of ['multiply','add-clamp']){
+            const [scene,request,renderReceipt,frame]=await Promise.all([
+              readFile(base+name+'.axmscene'),readFile(base+name+'.axmrender'),readFile(base+name+'.axmreceipt'),readFile(base+name+'.ppm'),
+            ]);
+            rows[name]={scene_sha256:sha(scene),request_sha256:sha(request),receipt_sha256:sha(renderReceipt),frame_sha256:sha(frame),frame_bytes:frame.length};
+          }
+          if(rows.multiply.scene_sha256!==receipt.outputs.multiply_scene.sha256||rows['add-clamp'].scene_sha256!==receipt.outputs.add_clamp_scene.sha256)throw new Error('scene identity changed before native rendering');
+          if(rows.multiply.frame_sha256===rows['add-clamp'].frame_sha256)throw new Error('materially different composition grids produced identical native frame bytes');
+          const evidence={
+            contract:'AXM_CREATIVE_VFX_FIELD_COMPOSITION_NATIVE_EVIDENCE',version:1,
+            composition_receipt_sha256:sha(receiptBytes),
+            shared_input_a_hash:receipt.shared_inputs.field_a_source_hash,
+            shared_input_b_hash:receipt.shared_inputs.field_b_source_hash,
+            multiply_composition_source_hash:receipt.multiply.visual_effect_fabric.composition_source.source_hash,
+            add_clamp_composition_source_hash:receipt.add_clamp.visual_effect_fabric.composition_source.source_hash,
+            multiply_grid_hash:receipt.multiply.visual_effect_fabric.grid.field_hash,
+            add_clamp_grid_hash:receipt.add_clamp.visual_effect_fabric.grid.field_hash,
+            renders:rows,
+            render_receipt_replay:{multiply:'PASS',add_clamp:'PASS'},
+            authority:{
+              input_fields:'CANONICAL_VFX_SCALAR_FIELD_SOURCES',
+              composition_sources:'CANONICAL_NEUTRAL_VFX_COMPOSITION_SOURCES',
+              retained_grids:'DERIVED_REBUILDABLE_VFX_WORKING_SETS',
+              axm_scenes:'DERIVED_REPLACEABLE_VISUAL_ADAPTER_BODIES',
+              pixels:'DERIVED_RENDER_FABRIC_OUTPUT',
+            },
+            truth_boundary:{
+              proves:'two real VFX neutral composition operations over the exact same canonical scalar-field sources produce distinct derived grids that cross one explicit visualization adapter into independently receipt-verified native pixels',
+              does_not_prove:'visual or artistic quality, material/smoke/fire/weather/gameplay/physics/visibility semantics, continuous-field equivalence beyond the sampled grids, real-time performance, GPU/browser parity or cross-machine bitwise determinism',
+            },
+          };
+          await writeFile(base+'native-field-composition-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_field_composition_native=PASS');
+          console.log(`multiply_frame_sha256=${rows.multiply.frame_sha256}`);
+          console.log(`add_clamp_frame_sha256=${rows['add-clamp'].frame_sha256}`);
+          NODE
+
+      - name: Upload complete VFX field composition native proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-field-composition-native-proof
+          path: creative-render/build/vfx-field-composition/
