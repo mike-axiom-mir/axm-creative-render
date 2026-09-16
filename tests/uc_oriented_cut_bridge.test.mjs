@@ -9,7 +9,8 @@ import {
 } from "../src/uc_oriented_cut_bridge.mjs";
 import { parseScene } from "../src/creative_scene_operator.mjs";
 
-const hex = (c) => c.repeat(64);
+const sha256Hex = (c) => c.repeat(64);
+const gitHex = (c) => c.repeat(40);
 
 function surface(name, positions, indices) {
   return {
@@ -33,21 +34,21 @@ function bundle() {
     version: 1,
     donor: {
       repository: "mike-axiom-mir/axm-universal-creation",
-      revision: hex("a"),
+      revision: gitHex("a"),
       public_route: "mesh-laser-oriented-hole",
     },
     source: {
-      glb_sha256: hex("b"),
+      glb_sha256: sha256Hex("b"),
       glb_bytes: 512,
       unchanged_after_cut: true,
       surface: sourceSurface,
     },
     cut: {
-      glb_sha256: hex("c"),
+      glb_sha256: sha256Hex("c"),
       glb_bytes: 768,
-      source_sha256: hex("b"),
-      request_sha256: hex("d"),
-      source_frame_sha256: hex("e"),
+      source_sha256: sha256Hex("b"),
+      request_sha256: sha256Hex("d"),
+      source_frame_sha256: sha256Hex("e"),
       operation: "round-through-hole",
       geometry: { vertices: 5, triangles: 3 },
       metrics: { source_volume: 24, output_volume: 20, removed_volume_by_closed_mesh: 4, axis_alignment: 1 },
@@ -102,6 +103,10 @@ test("oriented-cut adapter fails closed when source mutation or unsupported auth
   const diagonal = bundle();
   diagonal.cut.metrics.axis_alignment = 0.71;
   assert.throws(() => verifyOrientedCutDonorBundle(diagonal), /proven source-frame axis/);
+
+  const shortRevision = bundle();
+  shortRevision.donor.revision = "abc123";
+  assert.throws(() => verifyOrientedCutDonorBundle(shortRevision), /full lowercase Git object id/);
 });
 
 test("UC surface adapter rejects malformed topology and richer multi-primitive ambiguity", () => {
