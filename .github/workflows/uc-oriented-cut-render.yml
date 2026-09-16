@@ -1,0 +1,298 @@
+name: uc-oriented-cut-render
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: uc-oriented-cut-render-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-uc-oriented-cut-render:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Universal Creation
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-universal-creation
+          ref: 2b895aa6f8f9b1db0dffff3eeeb8c02b38131b7b
+          path: universal-creation
+
+      - name: Checkout pinned Render Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Use Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Prepare retained proof directory
+        run: mkdir -p creative-render/build/uc-oriented-cut
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run current Universal Creation oriented-cutter tests
+        run: python universal-creation/tests/test_oriented_mesh_precision_cutter.py
+
+      - name: Build rotated source and cut it through the real UC public route
+        run: |
+          python <<'PY'
+          from __future__ import annotations
+          import copy
+          import hashlib
+          import json
+          import math
+          import sys
+          from pathlib import Path
+
+          ROOT = Path('universal-creation').resolve()
+          sys.path.insert(0, str(ROOT / 'src'))
+          from axm_uc.machine import UniversalCreationMachine
+          from axm_uc.oriented_mesh_precision_cutter import build_oriented_source_mesh_cut
+          from axm_uc.precision_cutter import build_cut
+          from axm_uc.procedural_3d import publish_glb, verify_glb
+
+          OUT = Path('creative-render/build/uc-oriented-cut').resolve()
+          OUT.mkdir(parents=True, exist_ok=True)
+          source_path = OUT / 'source.glb'
+          cut_path = OUT / 'cut.glb'
+
+          def material():
+              return {'color':'#527A91FF','metallic':0.35,'roughness':0.42}
+
+          def matmul(a,b):
+              return [[sum(a[r][k]*b[k][c] for k in range(3)) for c in range(3)] for r in range(3)]
+
+          def rotation_matrix(rx=0.23, ry=-0.31, rz=0.18):
+              cx,sx=math.cos(rx),math.sin(rx); cy,sy=math.cos(ry),math.sin(ry); cz,sz=math.cos(rz),math.sin(rz)
+              x=[[1,0,0],[0,cx,-sx],[0,sx,cx]]
+              y=[[cy,0,sy],[0,1,0],[-sy,0,cy]]
+              z=[[cz,-sz,0],[sz,cz,0],[0,0,1]]
+              return matmul(z,matmul(y,x))
+
+          def transform_vector(matrix, vector):
+              return [sum(matrix[r][c]*vector[c] for c in range(3)) for r in range(3)]
+
+          size=(1.4,0.6,1.0)
+          translation=(0.08,-0.04,0.02)
+          rotation=rotation_matrix()
+          sx,sy,sz=size
+          stock=build_cut({
+              'schema':'axm.precision-cutter/v0.1','name':'Creative Render bounded source','operation':'profile-cut',
+              'thickness':sy,'material':material(),
+              'profile':[[-sx/2,-sz/2],[sx/2,-sz/2],[sx/2,sz/2],[-sx/2,sz/2]],
+          })
+          source_surface=copy.deepcopy(stock['surface_specification'])
+          source_surface['name']='Creative Render rotated source'
+          primitive=source_surface['primitives'][0]
+          primitive['positions']=[
+              [transform_vector(rotation,p)[axis]+translation[axis] for axis in range(3)]
+              for p in primitive['positions']
+          ]
+          primitive['normals']=[transform_vector(rotation,n) for n in primitive['normals']]
+          publication=publish_glb(source_path,source_surface)
+          source_bytes=source_path.read_bytes()
+          source_sha=hashlib.sha256(source_bytes).hexdigest()
+          if publication['sha256'] != source_sha or not verify_glb(source_bytes)['passed']:
+              raise RuntimeError('source GLB publication/validation drifted')
+
+          axes=[[rotation[row][column] for row in range(3)] for column in range(3)]
+          spec={
+              'schema':'axm.mesh-precision-cutter/v0.3','name':'Creative Render oriented source hole',
+              'operation':'round-through-hole','axis_vector':axes[1],'center':list(translation),
+              'radius':0.16,'segments':32,'kerf':0.02,
+          }
+          first=build_oriented_source_mesh_cut(source_path,spec,expected_source_sha256=source_sha)
+          second=build_oriented_source_mesh_cut(source_path,spec,expected_source_sha256=source_sha)
+          repeat_surface_match=first['surface_specification']==second['surface_specification'] and first['request_sha256']==second['request_sha256']
+          if not repeat_surface_match:
+              raise RuntimeError('current UC oriented cutter did not repeat identical derived surface/request evidence')
+
+          result=UniversalCreationMachine(ROOT).create({
+              'kind':'mesh-laser-oriented-hole',
+              'inputs':{
+                  'source_path':str(source_path),'path':str(cut_path),'specification':spec,
+                  'expected_source_sha256':source_sha,
+              },
+          })
+          if result.get('type')!='CREATION_RESULT':
+              raise RuntimeError(f'UC public route failed: {result!r}')
+          body=result['result']
+          if body['truth_status']!='VALIDATED_ORIENTED_EXISTING_MESH_PRECISION_CUT':
+              raise RuntimeError('UC public route did not return validated oriented cut')
+          if body['request_sha256']!=first['request_sha256']:
+              raise RuntimeError('public route request identity differs from repeated direct build')
+          if source_path.read_bytes()!=source_bytes or not body['source']['unchanged_after_publication']:
+              raise RuntimeError('UC oriented cut mutated source GLB')
+          cut_bytes=cut_path.read_bytes()
+          if body['sha256']!=hashlib.sha256(cut_bytes).hexdigest() or not verify_glb(cut_bytes)['passed']:
+              raise RuntimeError('cut GLB publication/validation drifted')
+          if body['output_topology']['status']!='CLOSED_ORIENTED_EDGE_MANIFOLD_CANDIDATE' or body['output_topology']['triangle_component_count']!=1:
+              raise RuntimeError('cut output topology gate failed')
+
+          bundle={
+              'contract':'AXM_UC_ORIENTED_CUT_DONOR_BUNDLE','version':1,
+              'donor':{
+                  'repository':'mike-axiom-mir/axm-universal-creation',
+                  'revision':'2b895aa6f8f9b1db0dffff3eeeb8c02b38131b7b',
+                  'public_route':'mesh-laser-oriented-hole',
+              },
+              'source':{
+                  'glb_sha256':source_sha,'glb_bytes':len(source_bytes),'unchanged_after_cut':True,
+                  'surface':source_surface,
+              },
+              'cut':{
+                  'glb_sha256':body['sha256'],'glb_bytes':body['bytes'],'source_sha256':body['source']['sha256'],
+                  'request_sha256':body['request_sha256'],
+                  'source_frame_sha256':first['source']['recognition']['frame_sha256'],
+                  'operation':body['operation'],'geometry':body['geometry'],'metrics':body['metrics'],
+                  'output_topology':body['output_topology'],'glb_validation_passed':body['glb_validation']['passed'],
+                  'repeat_surface_match':repeat_surface_match,'truth_boundary':body['truth_boundary'],
+                  'surface':first['surface_specification'],
+              },
+          }
+          (OUT/'donor-bundle.json').write_text(json.dumps(bundle,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          print('uc_oriented_cut_public_route=PASS')
+          print(f'source_glb_sha256={source_sha}')
+          print(f'cut_glb_sha256={body["sha256"]}')
+          print(f'source_frame_sha256={first["source"]["recognition"]["frame_sha256"]}')
+          print(f'axis_alignment={body["metrics"]["axis_alignment"]}')
+          print(f'source_volume={body["metrics"]["source_volume"]}')
+          print(f'output_volume={body["metrics"]["output_volume"]}')
+          print(f'cut_triangles={body["geometry"]["triangles"]}')
+          PY
+
+      - name: Adapt exact UC source and cut surfaces into renderer-neutral scenes
+        run: |
+          node creative-render/src/uc_oriented_cut_cli.mjs build \
+            --uc-root universal-creation \
+            --donor-bundle creative-render/build/uc-oriented-cut/donor-bundle.json \
+            --source-scene creative-render/build/uc-oriented-cut/source.axmscene \
+            --cut-scene creative-render/build/uc-oriented-cut/cut.axmscene \
+            --evidence creative-render/build/uc-oriented-cut/scene-evidence.json
+
+      - name: Assert source authority, subtraction, and adapter lineage
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { parseScene } from './creative-render/src/creative_scene_operator.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/uc-oriented-cut/';
+          const [bundleBytes,evidenceBytes,sourceBytes,cutBytes]=await Promise.all([
+            readFile(base+'donor-bundle.json'),readFile(base+'scene-evidence.json'),readFile(base+'source.axmscene'),readFile(base+'cut.axmscene')
+          ]);
+          const b=JSON.parse(bundleBytes),e=JSON.parse(evidenceBytes);
+          if(e.contract!=='AXM_CREATIVE_UC_ORIENTED_CUT_SCENE_EVIDENCE'||e.version!==1)throw new Error('scene evidence contract drifted');
+          if(e.observation.donor.donor_revision!=='2b895aa6f8f9b1db0dffff3eeeb8c02b38131b7b')throw new Error('UC donor revision drifted');
+          if(e.inputs.donor_bundle.sha256!==sha(bundleBytes))throw new Error('donor bundle bytes are not bound');
+          if(e.outputs.source_scene.sha256!==sha(sourceBytes)||e.outputs.cut_scene.sha256!==sha(cutBytes))throw new Error('scene output bytes are not bound');
+          if(e.outputs.source_scene.sha256===e.outputs.cut_scene.sha256)throw new Error('cut scene did not differ from source scene');
+          if(e.observation.source_preserved!==true||b.source.unchanged_after_cut!==true)throw new Error('source authority/preservation drifted');
+          if(e.observation.same_adapter_albedo!==true)throw new Error('source and cut adapter albedo differs');
+          if(!(e.observation.donor.source_volume>e.observation.donor.output_volume&&e.observation.donor.removed_volume>0))throw new Error('subtractive volume evidence failed');
+          if(Math.abs(e.observation.donor.axis_alignment-1)>1e-6)throw new Error('source-frame axis binding failed');
+          if(e.observation.authority.source_glb!=='CALLER_SELECTED_READ_ONLY_DONOR_SOURCE'||e.observation.authority.cut_glb_and_surface!=='DERIVED_UC_CREATIVE_CANDIDATE')throw new Error('authority boundary drifted');
+          const source=parseScene(sourceBytes.toString('utf8')),cut=parseScene(cutBytes.toString('utf8'));
+          if(source.triangles.length!==e.observation.donor.source_triangles||cut.triangles.length!==e.observation.donor.cut_triangles)throw new Error('scene triangle lineage drifted');
+          console.log('uc_oriented_cut_lineage=PASS');
+          console.log(`source_triangles=${source.triangles.length}`);
+          console.log(`cut_triangles=${cut.triangles.length}`);
+          console.log(`removed_volume=${e.observation.donor.removed_volume}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify source and cut scenes
+        run: |
+          base=creative-render/build/uc-oriented-cut
+          cat > "$base/source.axmrender" <<'EOF'
+          AXM_RENDER_REQUEST 1
+          scene source.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output source.ppm
+          EOF
+          cat > "$base/cut.axmrender" <<'EOF'
+          AXM_RENDER_REQUEST 1
+          scene cut.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output cut.ppm
+          EOF
+          for name in source cut; do
+            render-fabric/build/axm-render --request "$base/$name.axmrender" --receipt "$base/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$base/$name.axmrender" "$base/$name.axmreceipt"
+          done
+
+      - name: Bind oriented cut to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile,writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/uc-oriented-cut/';
+          const sceneEvidenceBytes=await readFile(base+'scene-evidence.json');
+          const sceneEvidence=JSON.parse(sceneEvidenceBytes);
+          const renders={};
+          for(const name of ['source','cut']){
+            const [scene,request,receipt,frame]=await Promise.all([
+              readFile(base+name+'.axmscene'),readFile(base+name+'.axmrender'),readFile(base+name+'.axmreceipt'),readFile(base+name+'.ppm')
+            ]);
+            renders[name]={scene_sha256:sha(scene),request_sha256:sha(request),receipt_sha256:sha(receipt),frame_sha256:sha(frame),frame_bytes:frame.length};
+            if(renders[name].scene_sha256!==sceneEvidence.outputs[`${name}_scene`].sha256)throw new Error(`${name} scene changed before native render binding`);
+          }
+          if(renders.source.frame_sha256===renders.cut.frame_sha256)throw new Error('verified UC geometry subtraction did not change native frame bytes');
+          const evidence={
+            contract:'AXM_CREATIVE_UC_ORIENTED_CUT_NATIVE_RENDER_EVIDENCE',version:1,
+            scene_evidence_sha256:sha(sceneEvidenceBytes),renders,
+            donor:sceneEvidence.observation.donor,
+            render_receipt_replay:{source:'PASS',cut:'PASS'},
+            same_adapter_albedo:sceneEvidence.observation.same_adapter_albedo,
+            authority:{source_glb:'CALLER_SELECTED_READ_ONLY_DONOR_SOURCE',cut:'DERIVED_UC_CREATIVE_CANDIDATE',scenes:'DERIVED_RENDERER_ADAPTER_STATE',pixels:'DERIVED_RENDER_FABRIC_OUTPUT'},
+            truth_boundary:{
+              proves:'the pinned current UC public oriented precision cutter changed a rotated source geometry candidate without mutating the source, and distinct same-albedo source/cut AXM scenes became independently receipt-verified native Render Fabric pixels',
+              does_not_prove:'general arbitrary-mesh CSG, arbitrary-angle source-relative cutting, cut chaining, rich material/UV/rig preservation, manufacturing or structural correctness, host import, aesthetic quality, or cross-machine bitwise determinism'
+            }
+          };
+          await writeFile(base+'native-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('uc_oriented_cut_native_render=PASS');
+          console.log(`source_frame_sha256=${renders.source.frame_sha256}`);
+          console.log(`cut_frame_sha256=${renders.cut.frame_sha256}`);
+          NODE
+
+      - name: Upload complete or failed oriented-cut proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-uc-oriented-cut-render-proof
+          path: creative-render/build/uc-oriented-cut/
+          if-no-files-found: warn
