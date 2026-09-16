@@ -1,0 +1,225 @@
+name: vfx-transient-canvas-physics
+
+on:
+  pull_request:
+    paths:
+      - 'src/vfx_transient_canvas_runtime_bridge.mjs'
+      - 'src/vfx_transient_canvas_physics_cli.mjs'
+      - 'src/vfx_transient_impulse_physics_bridge.mjs'
+      - 'src/vfx_uc_live_edit_bridge.mjs'
+      - 'src/vfx_uc_physics_proxy_bridge.mjs'
+      - 'src/donor_bridge.mjs'
+      - 'src/direct_sample_bridge.mjs'
+      - 'src/creative_scene_operator.mjs'
+      - 'src/path_safety.mjs'
+      - 'tests/vfx_transient_canvas_runtime_bridge.test.mjs'
+      - 'package.json'
+      - '.github/workflows/vfx-transient-canvas-physics.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/vfx_transient_canvas_runtime_bridge.mjs'
+      - 'src/vfx_transient_canvas_physics_cli.mjs'
+      - 'src/vfx_transient_impulse_physics_bridge.mjs'
+      - 'src/vfx_uc_live_edit_bridge.mjs'
+      - 'src/vfx_uc_physics_proxy_bridge.mjs'
+      - 'src/donor_bridge.mjs'
+      - 'src/direct_sample_bridge.mjs'
+      - 'src/creative_scene_operator.mjs'
+      - 'src/path_safety.mjs'
+      - 'tests/vfx_transient_canvas_runtime_bridge.test.mjs'
+      - 'package.json'
+      - '.github/workflows/vfx-transient-canvas-physics.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-vfx-transient-canvas-physics:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Universal Creation
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-universal-creation
+          ref: 8dd55d7186aa99911ca8d28af303f31d2c05fad4
+          path: universal-creation
+
+      - name: Checkout pinned current Visual Effect Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: 4944b5a2f5ad27f004d1bcf58f47fabae2c7cde8
+          path: visual-effect-fabric
+
+      - name: Checkout pinned Render Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Verify current Universal Creation Physics Core capsule
+        run: node universal-creation/capabilities/physics-core/selftest.js
+
+      - name: Verify current Visual Effect Fabric including generated Canvas2D runtime
+        run: |
+          npm --prefix visual-effect-fabric/hand-lab test
+          npm --prefix visual-effect-fabric/hand-lab run demo:transient-impulse:canvas
+
+      - name: Build shared VFX event Canvas runtime plus UC physics proof
+        run: |
+          mkdir -p creative-render/build/vfx-transient-canvas-physics
+          node creative-render/src/vfx_transient_canvas_physics_cli.mjs build \
+            --uc-root universal-creation \
+            --vfx-root visual-effect-fabric \
+            --source-scene creative-render/build/vfx-transient-canvas-physics/source.axmscene \
+            --surface-scene creative-render/build/vfx-transient-canvas-physics/surface.axmscene \
+            --edited-scene creative-render/build/vfx-transient-canvas-physics/edited.axmscene \
+            --impulse-scene creative-render/build/vfx-transient-canvas-physics/impulse.axmscene \
+            --surface-state creative-render/build/vfx-transient-canvas-physics/surface-state.json \
+            --surface-html creative-render/build/vfx-transient-canvas-physics/surface.html \
+            --impulse-state creative-render/build/vfx-transient-canvas-physics/impulse-state.json \
+            --impulse-svg creative-render/build/vfx-transient-canvas-physics/impulse.svg \
+            --canvas-state creative-render/build/vfx-transient-canvas-physics/canvas-state.json \
+            --canvas-html creative-render/build/vfx-transient-canvas-physics/canvas.html \
+            --canvas-trace creative-render/build/vfx-transient-canvas-physics/canvas-trace.json \
+            --physics-trace creative-render/build/vfx-transient-canvas-physics/physics-trace.json \
+            --receipt creative-render/build/vfx-transient-canvas-physics/receipt.json
+
+      - name: Assert shared event visual runtime and physics authority boundaries
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { parseScene } from './creative-render/src/creative_scene_operator.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-transient-canvas-physics/';
+          const [receiptBytes,editedBytes,impulseBytes,canvasStateBytes,canvasHtmlBytes,canvasTraceBytes,physicsTraceBytes]=await Promise.all([
+            readFile(base+'receipt.json'),readFile(base+'edited.axmscene'),readFile(base+'impulse.axmscene'),
+            readFile(base+'canvas-state.json'),readFile(base+'canvas.html'),readFile(base+'canvas-trace.json'),readFile(base+'physics-trace.json')
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          if(r.contract!=='AXM_CREATIVE_VFX_TRANSIENT_CANVAS_UC_PHYSICS_RECEIPT'||r.version!==1)throw new Error('transient Canvas physics receipt drifted');
+          const svg=r.visual_effect_transient_impulse,canvas=r.visual_effect_transient_canvas,p=r.universal_creation_transient_physics;
+          if(svg.canonical_event_hash!==canvas.canonical_event_hash||svg.field.geometry_hash!==canvas.field.geometry_hash)throw new Error('visual branches do not share canonical event/field identity');
+          if(r.shared_event_evidence.branches_agree!==true||r.shared_event_evidence.canvas_runtime_trace_sha256!==canvas.runtime.trace_sha256)throw new Error('shared event evidence drifted');
+          if(canvas.donor_graph_id!=='fx.transient-impulse-canvas2d'||canvas.donor_graph_version!=='0.1.0'||canvas.graph_repeat_verification!=='PASS')throw new Error('current Canvas2D donor graph not exercised cleanly');
+          if(canvas.realization.renderer!=='axm.vfx.transient-impulse-canvas2d/v0.1'||canvas.realization.working_set.rendererStateDisposable!==true)throw new Error('Canvas2D realization boundary drifted');
+          if(canvas.runtime.repeat_verification!=='PASS'||canvas.runtime.frame_count!==3||canvas.runtime.call_count<1)throw new Error('generated Canvas2D runtime did not execute repeatably');
+          for(const name of ['fillRect','ellipse','lineTo','arc','fill'])if(!(canvas.runtime.call_counts[name]>0))throw new Error(`Canvas2D runtime missed ${name}`);
+          if(canvas.runtime.truth_boundary.generated_renderer_javascript_executed!==true||canvas.runtime.truth_boundary.actual_browser_canvas_pixels_observed!==false)throw new Error('Canvas execution truth boundary drifted');
+          if(canvas.truth_boundary.gameplay_or_physics_semantics_owned_by_vfx!==false)throw new Error('Canvas branch gained hidden physics authority');
+          if(p.event_to_action.consumer_owns_mapping!==true||p.event_to_action.vfx_declares_physics_semantics!==false||p.event_to_action.derived_field_geometry_used_as_collision_or_force_data!==false)throw new Error('consumer-owned physics mapping boundary drifted');
+          if(p.repeat_verification!=='PASS'||p.source_state_mutated!==false||p.candidate_ready!==true)throw new Error('UC physics/creative repeat or agency boundary failed');
+          if(p.truth_boundary.physics_dimension!=='2D'||p.truth_boundary.impulse_moved_mesh_promoted_to_canonical_world_truth!==false)throw new Error('physics truth boundary drifted');
+          if(r.outputs.canvas_state.sha256!==sha(canvasStateBytes)||r.outputs.canvas_html.sha256!==sha(canvasHtmlBytes)||r.outputs.canvas_trace.sha256!==sha(canvasTraceBytes)||r.outputs.physics_trace.sha256!==sha(physicsTraceBytes))throw new Error('Canvas/physics evidence bytes lost receipt identity');
+          if(r.outputs.edited_scene.sha256!==sha(editedBytes)||r.outputs.impulse_scene.sha256!==sha(impulseBytes)||r.outputs.edited_scene.sha256===r.outputs.impulse_scene.sha256)throw new Error('renderer scene lineage drifted');
+          const trace=JSON.parse(canvasTraceBytes.toString('utf8'));
+          if(trace.canonical_event_hash!==svg.canonical_event_hash||trace.field_geometry_hash!==svg.field.geometry_hash||trace.call_count!==canvas.runtime.call_count)throw new Error('Canvas trace not bound to shared event evidence');
+          const before=parseScene(editedBytes.toString('utf8')),after=parseScene(impulseBytes.toString('utf8'));
+          if(before.triangles.length!==after.triangles.length||before.triangles.length<1||before.triangles.length>12000)throw new Error('impulse candidate topology count drifted');
+          for(let i=0;i<before.triangles.length;i++)if(JSON.stringify(before.triangles[i].albedo)!==JSON.stringify(after.triangles[i].albedo))throw new Error('physics comparison changed albedo');
+          console.log('vfx_transient_canvas_uc_physics_lineage=PASS');
+          console.log(`triangles=${before.triangles.length}`);
+          console.log(`event_hash=${svg.canonical_event_hash}`);
+          console.log(`field_hash=${svg.field.geometry_hash}`);
+          console.log(`canvas_frames=${canvas.runtime.frame_count}`);
+          console.log(`canvas_calls=${canvas.runtime.call_count}`);
+          console.log(`canvas_trace_sha256=${canvas.runtime.trace_sha256}`);
+          console.log(`physics_checksum=${p.final_checksum}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify pre-impulse and impulse-moved candidates
+        run: |
+          base=creative-render/build/vfx-transient-canvas-physics
+          cat > "$base/edited.axmrender" <<'EOF'
+          AXM_RENDER_REQUEST 1
+          scene edited.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output edited.ppm
+          EOF
+          cat > "$base/impulse.axmrender" <<'EOF'
+          AXM_RENDER_REQUEST 1
+          scene impulse.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output impulse.ppm
+          EOF
+          for name in edited impulse; do
+            render-fabric/build/axm-render --request "$base/$name.axmrender" --receipt "$base/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$base/$name.axmrender" "$base/$name.axmreceipt"
+          done
+
+      - name: Bind shared visual event runtime to independent native physics render evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile,writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-transient-canvas-physics/';
+          const [receiptBytes,canvasTrace,editedFrame,impulseFrame,editedScene,impulseScene,editedRenderReceipt,impulseRenderReceipt]=await Promise.all([
+            readFile(base+'receipt.json'),readFile(base+'canvas-trace.json'),readFile(base+'edited.ppm'),readFile(base+'impulse.ppm'),
+            readFile(base+'edited.axmscene'),readFile(base+'impulse.axmscene'),readFile(base+'edited.axmreceipt'),readFile(base+'impulse.axmreceipt')
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          const editedFrameSha=sha(editedFrame),impulseFrameSha=sha(impulseFrame);
+          if(editedFrameSha===impulseFrameSha)throw new Error('mapped transient impulse did not reach distinct native frame bytes');
+          const evidence={
+            contract:'AXM_CREATIVE_VFX_TRANSIENT_CANVAS_UC_PHYSICS_NATIVE_EVIDENCE',version:1,
+            creative_receipt_sha256:sha(receiptBytes),
+            shared_event_hash:r.shared_event_evidence.canonical_event_hash,
+            shared_field_hash:r.shared_event_evidence.field_geometry_hash,
+            canvas_runtime_trace_sha256:sha(canvasTrace),
+            canvas_runtime:r.visual_effect_transient_canvas.runtime,
+            consumer_event_to_action:r.universal_creation_transient_physics.event_to_action,
+            physics_final_checksum:r.universal_creation_transient_physics.final_checksum,
+            renders:{
+              edited:{scene_sha256:sha(editedScene),frame_sha256:editedFrameSha,receipt_sha256:sha(editedRenderReceipt)},
+              impulse:{scene_sha256:sha(impulseScene),frame_sha256:impulseFrameSha,receipt_sha256:sha(impulseRenderReceipt)}
+            },
+            render_receipt_replay:{edited:'PASS',impulse:'PASS'},
+            authority:{event:'VFX_CANONICAL_EFFECT_INPUT',canvas:'DERIVED_REPLACEABLE_RUNTIME_EVIDENCE',mapping:'CALLER_OWNED_ADAPTER',physics:'DERIVED_UC_PHYSICS_EVIDENCE',pixels:'DERIVED_RENDER_FABRIC_OUTPUT'},
+            truth_boundary:{
+              proves:'one exact neutral VFX event and field drove an actually executed derived Canvas2D renderer branch while a separate caller-owned mapping drove real UC physics into independently receipt-verified native pixels',
+              does_not_prove:'actual browser Canvas pixels, visual equivalence between Canvas and SVG, Canvas-to-native compositing, VFX-owned physics semantics, 3D physics, live world mutation, real-time synchronization, visual quality or cross-engine determinism'
+            }
+          };
+          await writeFile(base+'native-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_transient_canvas_uc_physics_native=PASS');
+          console.log(`edited_frame_sha256=${editedFrameSha}`);
+          console.log(`impulse_frame_sha256=${impulseFrameSha}`);
+          NODE
+
+      - name: Upload complete transient Canvas plus physics proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-transient-canvas-physics-proof
+          path: creative-render/build/vfx-transient-canvas-physics/
+          if-no-files-found: error
