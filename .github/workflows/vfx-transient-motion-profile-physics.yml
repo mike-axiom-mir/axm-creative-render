@@ -1,0 +1,224 @@
+name: vfx-transient-motion-profile-physics
+
+on:
+  pull_request:
+    paths:
+      - 'src/vfx_transient_motion_profile_bridge.mjs'
+      - 'src/vfx_transient_motion_profile_cli.mjs'
+      - 'tests/vfx_transient_motion_profile_bridge.test.mjs'
+      - 'src/vfx_transient_canvas_runtime_bridge.mjs'
+      - 'src/vfx_transient_canvas_physics_cli.mjs'
+      - 'src/vfx_transient_impulse_physics_bridge.mjs'
+      - 'src/vfx_uc_live_edit_bridge.mjs'
+      - 'src/vfx_uc_physics_proxy_bridge.mjs'
+      - 'package.json'
+      - '.github/workflows/vfx-transient-motion-profile-physics.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/vfx_transient_motion_profile_bridge.mjs'
+      - 'src/vfx_transient_motion_profile_cli.mjs'
+      - 'tests/vfx_transient_motion_profile_bridge.test.mjs'
+      - 'src/vfx_transient_canvas_runtime_bridge.mjs'
+      - 'src/vfx_transient_canvas_physics_cli.mjs'
+      - 'src/vfx_transient_impulse_physics_bridge.mjs'
+      - 'src/vfx_uc_live_edit_bridge.mjs'
+      - 'src/vfx_uc_physics_proxy_bridge.mjs'
+      - 'package.json'
+      - '.github/workflows/vfx-transient-motion-profile-physics.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-vfx-transient-motion-profile-physics:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout current Universal Creation
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-universal-creation
+          ref: 6ac748d78fec88c6b201d12bc5fd9fdc67fac376
+          path: universal-creation
+
+      - name: Checkout current Visual Effect Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: 6d9a332a5cf3b90315e43a42ada015ed5a31ce24
+          path: visual-effect-fabric
+
+      - name: Checkout Render Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Verify current Universal Creation physics capsule and constraint growth
+        run: |
+          node universal-creation/capabilities/physics-core/selftest.js
+          node universal-creation/capabilities/physics-core/distance-joints-selftest.js
+          node universal-creation/capabilities/physics-core/translation-mounts-selftest.js
+          node universal-creation/capabilities/physics-core/constraint-composer-selftest.js
+
+      - name: Verify current Visual Effect Fabric including transient branches
+        run: |
+          npm --prefix visual-effect-fabric/hand-lab test
+          npm --prefix visual-effect-fabric/hand-lab run demo:transient-impulse:canvas
+
+      - name: Build explicit full-motion and motion-free profile evidence
+        run: |
+          base=creative-render/build/vfx-transient-motion-profile
+          mkdir -p "$base"
+          node creative-render/src/vfx_transient_motion_profile_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --canvas-state "$base/profile-canvas-state.json" \
+            --canvas-html "$base/profile-canvas.html" \
+            --canvas-trace "$base/profile-canvas-trace.json" \
+            --static-state "$base/profile-static-state.json" \
+            --static-svg "$base/profile-static.svg" \
+            --evidence "$base/profile-evidence.json"
+
+      - name: Run the same canonical event through real UC physics and creative flow
+        run: |
+          base=creative-render/build/vfx-transient-motion-profile
+          node creative-render/src/vfx_transient_canvas_physics_cli.mjs build \
+            --uc-root universal-creation \
+            --vfx-root visual-effect-fabric \
+            --source-scene "$base/source.axmscene" \
+            --surface-scene "$base/surface.axmscene" \
+            --edited-scene "$base/edited.axmscene" \
+            --impulse-scene "$base/impulse.axmscene" \
+            --surface-state "$base/surface-state.json" \
+            --surface-html "$base/surface.html" \
+            --impulse-state "$base/impulse-state.json" \
+            --impulse-svg "$base/impulse.svg" \
+            --canvas-state "$base/physics-canvas-state.json" \
+            --canvas-html "$base/physics-canvas.html" \
+            --canvas-trace "$base/physics-canvas-trace.json" \
+            --physics-trace "$base/physics-trace.json" \
+            --receipt "$base/physics-receipt.json"
+
+      - name: Assert profile choice cannot rewrite shared event or physics input
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-transient-motion-profile/';
+          const [profileBytes,physicsBytes,staticSvg,profileCanvasTrace,physicsCanvasTrace]=await Promise.all([
+            readFile(base+'profile-evidence.json'),readFile(base+'physics-receipt.json'),readFile(base+'profile-static.svg'),
+            readFile(base+'profile-canvas-trace.json'),readFile(base+'physics-canvas-trace.json')
+          ]);
+          const profile=JSON.parse(profileBytes.toString('utf8')),physics=JSON.parse(physicsBytes.toString('utf8'));
+          if(profile.contract!=='AXM_CREATIVE_VFX_TRANSIENT_MOTION_PROFILE_EVIDENCE'||profile.version!==1)throw new Error('motion-profile evidence contract drifted');
+          const o=profile.observation;
+          if(o.pre_realization_state_parity!=='PASS'||o.static_graph_repeat_verification!=='PASS'||o.canvas_runtime_repeat_verification!=='PASS')throw new Error('motion-profile repeat/parity proof failed');
+          if(o.canonical_event_hash!==physics.shared_event_evidence.canonical_event_hash||o.field_geometry_hash!==physics.shared_event_evidence.field_geometry_hash)throw new Error('visual profile proof does not share physics event/field identity');
+          if(o.full_motion_selection.canonical_event_hash!==o.motion_free_selection.canonical_event_hash||o.full_motion_selection.field_geometry_hash!==o.motion_free_selection.field_geometry_hash||o.full_motion_selection.envelope_sha256!==o.motion_free_selection.envelope_sha256)throw new Error('profile selection rewrote shared lineage');
+          if(o.full_motion_selection.renderer!=='axm.vfx.transient-impulse-canvas2d/v0.1'||o.motion_free_selection.renderer!=='axm.vfx.transient-impulse-static-svg/v0.1')throw new Error('expected current VFX renderers not exercised');
+          const staticText=staticSvg.toString('utf8').toLowerCase();
+          for(const forbidden of ['<animate','<script','requestanimationframe'])if(staticText.includes(forbidden))throw new Error(`motion-free artifact contains ${forbidden}`);
+          if(physics.universal_creation_transient_physics.event_to_action.consumer_owns_mapping!==true||physics.universal_creation_transient_physics.event_to_action.vfx_declares_physics_semantics!==false)throw new Error('visual donor gained hidden physics authority');
+          if(physics.universal_creation_transient_physics.repeat_verification!=='PASS'||physics.universal_creation_transient_physics.source_state_mutated!==false||physics.universal_creation_transient_physics.candidate_ready!==true)throw new Error('UC physics/creative agency boundary failed');
+          if(sha(profileCanvasTrace)!==o.canvas.runtime_trace_sha256)throw new Error('profile Canvas trace bytes lost identity');
+          if(sha(physicsCanvasTrace)!==physics.visual_effect_transient_canvas.runtime.trace_sha256)throw new Error('physics Canvas trace bytes lost identity');
+          if(sha(profileCanvasTrace)!==sha(physicsCanvasTrace))throw new Error('same event did not repeat the same Canvas runtime trace across profile and physics paths');
+          const evidence={
+            contract:'AXM_CREATIVE_VFX_MOTION_PROFILE_PHYSICS_LINK_EVIDENCE',version:1,
+            profile_evidence_sha256:sha(profileBytes),physics_receipt_sha256:sha(physicsBytes),
+            canonical_event_hash:o.canonical_event_hash,field_geometry_hash:o.field_geometry_hash,envelope_sha256:o.envelope_sha256,
+            selections:{full_motion:o.full_motion_selection,motion_free:o.motion_free_selection},
+            physics:{mapping:physics.universal_creation_transient_physics.event_to_action,final_checksum:physics.universal_creation_transient_physics.final_checksum,displacement_xy:physics.universal_creation_transient_physics.displacement_xy},
+            authority:{profile:'CALLER_OWNED_DERIVED_REALIZATION_CHOICE',event:'UNCHANGED_VFX_CANONICAL_EFFECT_INPUT',physics_mapping:'CALLER_OWNED_CREATIVE_RENDER_ADAPTER'},
+            truth_boundary:{proves:'the user/caller may choose full-motion or motion-free derived VFX realization while the exact canonical event/field/envelope identity presented to the independent physics path stays unchanged',does_not_prove:'accessibility acceptance, visual equivalence, browser/static pixels, 3D physics, gameplay semantics, live-world mutation or real-time performance'}
+          };
+          await writeFile(base+'profile-physics-link-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_motion_profile_physics_link=PASS');
+          console.log(`event_hash=${o.canonical_event_hash}`);
+          console.log(`field_hash=${o.field_geometry_hash}`);
+          console.log(`envelope_sha256=${o.envelope_sha256}`);
+          console.log(`physics_checksum=${physics.universal_creation_transient_physics.final_checksum}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify pre-impulse and impulse candidates
+        run: |
+          base=creative-render/build/vfx-transient-motion-profile
+          cat > "$base/edited.axmrender" <<'EOF'
+          AXM_RENDER_REQUEST 1
+          scene edited.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output edited.ppm
+          EOF
+          cat > "$base/impulse.axmrender" <<'EOF'
+          AXM_RENDER_REQUEST 1
+          scene impulse.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output impulse.ppm
+          EOF
+          for name in edited impulse; do
+            render-fabric/build/axm-render --request "$base/$name.axmrender" --receipt "$base/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$base/$name.axmrender" "$base/$name.axmreceipt"
+          done
+
+      - name: Bind profile agency to independent native render evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile,writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-transient-motion-profile/';
+          const [linkBytes,editedFrame,impulseFrame,editedReceipt,impulseReceipt]=await Promise.all([
+            readFile(base+'profile-physics-link-evidence.json'),readFile(base+'edited.ppm'),readFile(base+'impulse.ppm'),readFile(base+'edited.axmreceipt'),readFile(base+'impulse.axmreceipt')
+          ]);
+          if(sha(editedFrame)===sha(impulseFrame))throw new Error('shared event physics path did not reach distinct native pixels');
+          const linked=JSON.parse(linkBytes.toString('utf8'));
+          const evidence={
+            contract:'AXM_CREATIVE_VFX_MOTION_PROFILE_NATIVE_EVIDENCE',version:1,
+            linked_evidence_sha256:sha(linkBytes),canonical_event_hash:linked.canonical_event_hash,
+            selections:linked.selections,physics_final_checksum:linked.physics.final_checksum,
+            renders:{edited:{frame_sha256:sha(editedFrame),receipt_sha256:sha(editedReceipt)},impulse:{frame_sha256:sha(impulseFrame),receipt_sha256:sha(impulseReceipt)}},
+            render_receipt_replay:{edited:'PASS',impulse:'PASS'},
+            authority:{source_and_event:'UNCHANGED_INPUT_AUTHORITY',visual_profiles:'DERIVED_REPLACEABLE_REALIZATIONS',physics:'DERIVED_UC_PHYSICS_EVIDENCE',pixels:'DERIVED_RENDER_FABRIC_OUTPUT'},
+            truth_boundary:{proves:'motion-profile choice stays outside canonical event and physics authority while the unchanged event still drives verified derived physics-to-pixels evidence',does_not_prove:'visual-profile pixel equivalence, accessibility acceptance, visual quality, 3D physics, live-world mutation or cross-machine determinism'}
+          };
+          await writeFile(base+'native-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_motion_profile_native=PASS');
+          console.log(`edited_frame_sha256=${sha(editedFrame)}`);
+          console.log(`impulse_frame_sha256=${sha(impulseFrame)}`);
+          NODE
+
+      - name: Upload complete motion-profile agency proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-motion-profile-physics-proof
+          path: creative-render/build/vfx-transient-motion-profile/
+          if-no-files-found: error
