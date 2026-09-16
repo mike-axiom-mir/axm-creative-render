@@ -1,0 +1,143 @@
+name: vfx-electric-svg-browser
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vfx-electric-svg-browser-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-vfx-electric-svg-browser:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: 0ddf38f2c3aa3f5dc3b68bb82944508fe04fb7a4
+          path: visual-effect-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Build exact ordinary and modulated SVG donor artifacts
+        run: |
+          root=creative-render/build/vfx-electric-svg-browser
+          mkdir -p "$root"
+          node creative-render/src/vfx_electric_svg_browser_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --base-svg "$root/base.svg" \
+            --modulated-svg "$root/modulated.svg" \
+            --state "$root/vfx-state.json" \
+            --probe "$root/browser-probe.html" \
+            --receipt "$root/build.receipt.json"
+
+      - name: Assert donor selection preserves source authority before observation
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-electric-svg-browser/';
+          const [receiptBytes,baseSvg,modulatedSvg,probe]=await Promise.all([
+            readFile(root+'build.receipt.json'),readFile(root+'base.svg'),readFile(root+'modulated.svg'),readFile(root+'browser-probe.html'),
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          if(r.contract!=='AXM_CREATIVE_VFX_ELECTRIC_SVG_BROWSER_BUILD_RECEIPT'||r.version!==1)throw new Error('browser build receipt drifted');
+          const v=r.visual_effect_fabric;
+          if(v.graph_id!=='fx.electric-storm.modulated-svg'||v.graph_version!=='0.1.0'||v.donor_graph_reused!==true||v.existing_svg_donor_reused!==true)throw new Error('current VFX modulated SVG graph not exercised');
+          if(v.repeat_verification!=='PASS'||v.modulation_contract_preserved_before_render_selection!==true)throw new Error('modulation continuity gate failed');
+          if(v.base_svg.derived_from_paths_hash!==v.retained_base_paths_hash)throw new Error('base SVG lost retained path identity');
+          if(v.modulated_svg.derived_from_selected_path_set_hash!==v.selected_modulated_path_set_hash)throw new Error('modulated SVG lost selected path identity');
+          if(v.zero_strength_equivalence.status!=='PASS'||v.zero_strength_equivalence.byte_identical!==true||v.zero_strength_equivalence.base_svg_sha256!==v.zero_strength_equivalence.modulated_svg_sha256)throw new Error('zero-strength equivalence gate failed');
+          if(v.truth_boundary.browser_pixels_proven!==false||v.truth_boundary.aesthetic_quality_proven!==false||v.truth_boundary.readability_improvement_proven!==false)throw new Error('pre-browser truth boundary was promoted');
+          if(r.outputs.base_svg.sha256!==sha(baseSvg)||r.outputs.modulated_svg.sha256!==sha(modulatedSvg)||r.outputs.browser_probe_html.sha256!==sha(probe))throw new Error('build output byte binding drifted');
+          if(r.comparison.base_and_modulated_svg_differ!==true||r.comparison.zero_strength_svg_is_byte_identical!==true||r.comparison.same_retained_base_paths_hash!==true||r.comparison.modulated_svg_bound_to_selected_path_set!==true||r.comparison.modulation_contract_preserved_before_render_selection!==true)throw new Error('SVG comparison gate failed');
+          console.log('vfx_electric_svg_lineage=PASS');
+          console.log(`base_paths_hash=${v.retained_base_paths_hash}`);
+          console.log(`modulated_path_set_hash=${v.selected_modulated_path_set_hash}`);
+          console.log(`base_svg_sha256=${r.outputs.base_svg.sha256}`);
+          console.log(`modulated_svg_sha256=${r.outputs.modulated_svg.sha256}`);
+          NODE
+
+      - name: Locate installed browser and retain exact version
+        run: |
+          root=creative-render/build/vfx-electric-svg-browser
+          browser="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || true)"
+          if [ -z "$browser" ]; then
+            echo "No supported Chromium-family browser is installed on this runner" >&2
+            exit 1
+          fi
+          printf '%s\n' "$browser" > "$root/browser-path.txt"
+          "$browser" --version | tee "$root/browser-version.txt"
+
+      - name: Rasterize exact donor SVGs through the real headless browser
+        run: |
+          root=creative-render/build/vfx-electric-svg-browser
+          browser="$(cat "$root/browser-path.txt")"
+          probe_uri="file://$(realpath "$root/browser-probe.html")"
+          "$browser" --headless=new --no-sandbox --disable-gpu --allow-file-access-from-files --virtual-time-budget=5000 --dump-dom "$probe_uri" > "$root/browser-probe.dump.html"
+          grep -q 'data-axm-done="true"' "$root/browser-probe.dump.html"
+          "$browser" --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=1000,600 --screenshot="$PWD/$root/base-browser.png" "file://$(realpath "$root/base.svg")"
+          "$browser" --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=1000,600 --screenshot="$PWD/$root/modulated-browser.png" "file://$(realpath "$root/modulated.svg")"
+          test -s "$root/base-browser.png"
+          test -s "$root/modulated-browser.png"
+
+      - name: Verify and bind raw browser pixel evidence
+        run: |
+          root=creative-render/build/vfx-electric-svg-browser
+          node creative-render/src/vfx_electric_svg_browser_cli.mjs verify-browser \
+            --dump "$root/browser-probe.dump.html" \
+            --probe "$root/browser-probe.html" \
+            --build-receipt "$root/build.receipt.json" \
+            --browser-version "$root/browser-version.txt" \
+            --base-screenshot "$root/base-browser.png" \
+            --modulated-screenshot "$root/modulated-browser.png" \
+            --out "$root/browser-raster-evidence.json"
+
+      - name: Assert browser evidence stays observational and derived
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          const root='creative-render/build/vfx-electric-svg-browser/';
+          const e=JSON.parse(await readFile(root+'browser-raster-evidence.json','utf8'));
+          if(e.contract!=='AXM_CREATIVE_VFX_ELECTRIC_SVG_BROWSER_RASTER_EVIDENCE'||e.version!==1)throw new Error('browser evidence contract drifted');
+          if(e.raster.schema!=='axm.creative-render.browser-svg-raster-evidence/v1'||e.raster.width!==1000||e.raster.height!==600||e.raster.pixel_count!==600000||e.raster.rgba_bytes!==2400000)throw new Error('browser raster contract drifted');
+          if(e.raster.base_svg_sha256!==e.base_svg_sha256||e.raster.modulated_svg_sha256!==e.modulated_svg_sha256)throw new Error('browser raster lost SVG byte identity');
+          if(e.raster.different_pixels<1||e.raster.different_channels<1||e.raster.sum_abs_channel_delta<1||e.raster.max_channel_delta<1)throw new Error('non-zero modulation was not observable in raw browser pixels');
+          if(e.raster.base_rgba_fnv1a32===e.raster.modulated_rgba_fnv1a32)throw new Error('browser raw-pixel checksums unexpectedly match');
+          if(e.browser.network_required!==false||e.authority.browser_rgba_and_screenshots!=='DERIVED_BROWSER_OUTPUT')throw new Error('browser observer authority boundary drifted');
+          if(!e.truth_boundary.does_not_prove.includes('aesthetically better')||!e.truth_boundary.does_not_prove.includes('cross-browser'))throw new Error('browser truth boundary weakened');
+          console.log('vfx_electric_svg_browser_observation=PASS');
+          console.log(`different_pixels=${e.raster.different_pixels}`);
+          console.log(`sum_abs_channel_delta=${e.raster.sum_abs_channel_delta}`);
+          console.log(`base_rgba_fnv1a32=${e.raster.base_rgba_fnv1a32}`);
+          console.log(`modulated_rgba_fnv1a32=${e.raster.modulated_rgba_fnv1a32}`);
+          NODE
+
+      - name: Upload complete electric SVG browser proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-electric-svg-browser-proof
+          path: creative-render/build/vfx-electric-svg-browser/
+          if-no-files-found: warn
