@@ -1,0 +1,164 @@
+name: vfx-particle-flow-svg-browser
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vfx-particle-flow-svg-browser-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-vfx-particle-flow-svg-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: f667b7e2df5d05fd155348a20a398d35cb443744
+          path: visual-effect-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Prepare retained proof directory
+        run: |
+          root=creative-render/build/vfx-particle-flow-svg-browser
+          mkdir -p "$root"
+          cat > "$root/donor-revisions.json" <<'EOF'
+          {
+            "visual_effect_fabric": "f667b7e2df5d05fd155348a20a398d35cb443744"
+          }
+          EOF
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Build exact zero and active particle-flow SVG donor artifacts
+        run: |
+          root=creative-render/build/vfx-particle-flow-svg-browser
+          node creative-render/src/vfx_particle_flow_svg_browser_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --vfx-revision f667b7e2df5d05fd155348a20a398d35cb443744 \
+            --source-particles "$root/source-particles.json" \
+            --zero-state "$root/zero-state.json" \
+            --active-state "$root/active-state.json" \
+            --zero-svg "$root/zero.svg" \
+            --active-svg "$root/active.svg" \
+            --probe "$root/browser-probe.html" \
+            --receipt "$root/build.receipt.json"
+
+      - name: Independently assert source authority and derived SVG lineage
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-particle-flow-svg-browser/';
+          const [receiptBytes,sourceBytes,zeroStateBytes,activeStateBytes,zeroSvg,activeSvg,probe,donorsBytes]=await Promise.all([
+            readFile(root+'build.receipt.json'),readFile(root+'source-particles.json'),readFile(root+'zero-state.json'),readFile(root+'active-state.json'),readFile(root+'zero.svg'),readFile(root+'active.svg'),readFile(root+'browser-probe.html'),readFile(root+'donor-revisions.json'),
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8')),d=JSON.parse(donorsBytes.toString('utf8')),v=r.visual_effect_fabric;
+          if(d.visual_effect_fabric!=='f667b7e2df5d05fd155348a20a398d35cb443744'||v.donor_revision!==d.visual_effect_fabric)throw new Error('pinned current VFX revision evidence drifted');
+          if(r.contract!=='AXM_CREATIVE_VFX_PARTICLE_FLOW_SVG_BROWSER_BUILD_RECEIPT'||r.version!==1)throw new Error('particle-flow SVG build receipt drifted');
+          if(v.graph_id!=='fx.particle.flow-advected-static-svg'||v.graph_version!=='0.1.0')throw new Error('current particle-flow static SVG graph was not exercised');
+          if(JSON.stringify(v.hand_ids)!==JSON.stringify(['fx.particle.flow-advection-source-normalize','fx.particle.flow-advection-build','fx.particle.flow-static-svg-realize']))throw new Error('particle-flow SVG Hand boundary drifted');
+          if(v.caller_neutral_repeat_verification!=='PASS')throw new Error('caller-neutral repeat verification failed');
+          if(v.zero.step_size!==0||v.zero.moved_particle_count!==0||v.zero.max_step_distance!==0)throw new Error('zero advection did not remain exact no-op');
+          if(!(v.active.step_size>0)||!(v.active.moved_particle_count>0)||!(v.active.max_step_distance>0))throw new Error('active advection did not move particles');
+          if(v.zero.particle_count!==12||v.active.particle_count!==12||v.zero.sample_count!==156||v.active.sample_count!==156)throw new Error('bounded particle-flow fixture cardinality drifted');
+          if(v.zero.particle_set_hash===v.active.particle_set_hash||v.zero.advection_source_hash===v.active.advection_source_hash)throw new Error('explicit advection choice did not change derived identities');
+          if(v.zero.derived_from_particle_set_hash!==v.zero.particle_set_hash||v.active.derived_from_particle_set_hash!==v.active.particle_set_hash)throw new Error('donor SVG lost selected derived particle-set lineage');
+          if(r.outputs.source_particles.sha256!==sha(sourceBytes)||r.outputs.zero_state.sha256!==sha(zeroStateBytes)||r.outputs.active_state.sha256!==sha(activeStateBytes)||r.outputs.zero_svg.sha256!==sha(zeroSvg)||r.outputs.active_svg.sha256!==sha(activeSvg)||r.outputs.browser_probe_html.sha256!==sha(probe))throw new Error('retained proof byte binding drifted');
+          if(r.outputs.zero_svg.sha256===r.outputs.active_svg.sha256||r.comparison.donor_svg_changes!==true||r.comparison.zero_is_exact_noop!==true||r.comparison.active_moves_particles!==true||r.comparison.both_svgs_bound_to_selected_derived_sets!==true)throw new Error('zero/active donor SVG comparison gate failed');
+          if(v.truth_boundary.browser_pixels_proven!==false||v.truth_boundary.aesthetic_quality_proven!==false||v.truth_boundary.readability_proven!==false)throw new Error('pre-browser truth boundary was promoted');
+          const evidence={contract:'AXM_CREATIVE_VFX_PARTICLE_FLOW_SVG_INDEPENDENT_EVIDENCE',version:1,build_receipt_sha256:sha(receiptBytes),donor_revision:d.visual_effect_fabric,retained_sources:v.retained_sources,zero_particle_set_hash:v.zero.particle_set_hash,active_particle_set_hash:v.active.particle_set_hash,gates:{caller_source_authority:'PASS',zero_exact_noop:'PASS',active_derived_motion:'PASS',trajectory_cardinality_retained:'PASS',svg_selected_set_lineage:'PASS',caller_neutral_repeat:'PASS',pre_browser_truth_boundary:'PASS'}};
+          await writeFile(root+'independent-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_particle_flow_svg_lineage=PASS');
+          console.log(`particle_source_hash=${v.retained_sources.particle_source_hash}`);
+          console.log(`zero_particle_set_hash=${v.zero.particle_set_hash}`);
+          console.log(`active_particle_set_hash=${v.active.particle_set_hash}`);
+          console.log(`zero_svg_sha256=${r.outputs.zero_svg.sha256}`);
+          console.log(`active_svg_sha256=${r.outputs.active_svg.sha256}`);
+          NODE
+
+      - name: Locate installed browser and retain exact version
+        run: |
+          root=creative-render/build/vfx-particle-flow-svg-browser
+          browser="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || true)"
+          if [ -z "$browser" ]; then
+            echo "No supported Chromium-family browser is installed on this runner" >&2
+            exit 1
+          fi
+          printf '%s\n' "$browser" > "$root/browser-path.txt"
+          "$browser" --version | tee "$root/browser-version.txt"
+
+      - name: Rasterize exact donor SVGs through the real headless browser
+        run: |
+          root=creative-render/build/vfx-particle-flow-svg-browser
+          browser="$(cat "$root/browser-path.txt")"
+          probe_uri="file://$(realpath "$root/browser-probe.html")"
+          "$browser" --headless=new --no-sandbox --disable-gpu --allow-file-access-from-files --virtual-time-budget=5000 --dump-dom "$probe_uri" > "$root/browser-probe.dump.html"
+          grep -q 'data-axm-done="true"' "$root/browser-probe.dump.html"
+          "$browser" --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=640,420 --screenshot="$PWD/$root/zero-browser.png" "file://$(realpath "$root/zero.svg")"
+          "$browser" --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=640,420 --screenshot="$PWD/$root/active-browser.png" "file://$(realpath "$root/active.svg")"
+          test -s "$root/zero-browser.png"
+          test -s "$root/active-browser.png"
+
+      - name: Verify and bind raw browser pixel evidence
+        run: |
+          root=creative-render/build/vfx-particle-flow-svg-browser
+          node creative-render/src/vfx_particle_flow_svg_browser_cli.mjs verify-browser \
+            --dump "$root/browser-probe.dump.html" \
+            --probe "$root/browser-probe.html" \
+            --build-receipt "$root/build.receipt.json" \
+            --browser-version "$root/browser-version.txt" \
+            --zero-screenshot "$root/zero-browser.png" \
+            --active-screenshot "$root/active-browser.png" \
+            --out "$root/browser-raster-evidence.json"
+
+      - name: Assert browser evidence remains observational and derived
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          const root='creative-render/build/vfx-particle-flow-svg-browser/';
+          const e=JSON.parse(await readFile(root+'browser-raster-evidence.json','utf8'));
+          if(e.contract!=='AXM_CREATIVE_VFX_PARTICLE_FLOW_SVG_BROWSER_RASTER_EVIDENCE'||e.version!==1)throw new Error('browser evidence contract drifted');
+          if(e.raster.schema!=='axm.creative-render.particle-flow-browser-svg-raster-evidence/v1'||e.raster.width!==640||e.raster.height!==420||e.raster.pixel_count!==268800||e.raster.rgba_bytes!==1075200)throw new Error('browser raster contract drifted');
+          if(e.raster.zero_svg_sha256!==e.zero_svg_sha256||e.raster.active_svg_sha256!==e.active_svg_sha256)throw new Error('browser raster lost exact SVG byte identity');
+          if(e.raster.different_pixels<1||e.raster.different_channels<1||e.raster.sum_abs_channel_delta<1||e.raster.max_channel_delta<1)throw new Error('active particle-flow difference was not observable in raw browser pixels');
+          if(e.raster.zero_rgba_fnv1a32===e.raster.active_rgba_fnv1a32)throw new Error('browser raw-pixel checksums unexpectedly match');
+          if(e.browser.network_required!==false||e.authority.browser_rgba_and_screenshots!=='DERIVED_BROWSER_OUTPUT')throw new Error('browser observer authority boundary drifted');
+          if(!e.truth_boundary.does_not_prove.includes('aesthetically better')||!e.truth_boundary.does_not_prove.includes('cross-browser'))throw new Error('browser truth boundary weakened');
+          console.log('vfx_particle_flow_svg_browser_observation=PASS');
+          console.log(`browser=${e.browser.version}`);
+          console.log(`different_pixels=${e.raster.different_pixels}`);
+          console.log(`different_channels=${e.raster.different_channels}`);
+          console.log(`sum_abs_channel_delta=${e.raster.sum_abs_channel_delta}`);
+          console.log(`zero_rgba_fnv1a32=${e.raster.zero_rgba_fnv1a32}`);
+          console.log(`active_rgba_fnv1a32=${e.raster.active_rgba_fnv1a32}`);
+          NODE
+
+      - name: Upload complete particle-flow SVG browser proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-particle-flow-svg-browser-proof
+          path: creative-render/build/vfx-particle-flow-svg-browser/
+          if-no-files-found: warn
