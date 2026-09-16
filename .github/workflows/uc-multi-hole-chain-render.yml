@@ -83,11 +83,14 @@ jobs:
           def hole(hid,center,radius,segments):
               return {'id':hid,'center':list(center),'radius':radius,'segments':segments,'kerf':0.02}
           def spec(name,holes):
-              return {'schema':'axm.mesh-hole-fabrication-chain/v0.5','name':name,'axis_vector':[0.0,1.0,0.0],'holes':holes}
+              # Render Fabric's fixed reference camera projects X/Y and uses Z only for depth.
+              # Select the root's Z fabrication axis so the hole cross-sections are observable in
+              # this proof view; this is evidence design, not a claim of general camera coverage.
+              return {'schema':'axm.mesh-hole-fabrication-chain/v0.5','name':name,'axis_vector':[0.0,0.0,1.0],'holes':holes}
 
           stage_one_spec=spec('Creative Render two-hole stage',[
-              hole('left',(-.40,0.0,-.10),.11,18),
-              hole('right',(.40,0.0,.08),.12,24),
+              hole('left',(-.40,-.08,0.0),.08,18),
+              hole('right',(.40,.08,0.0),.09,24),
           ])
           direct_one=build_hole_fabrication_chain(root_path,stage_one_spec,expected_source_sha256=root_sha)
           machine=UniversalCreationMachine(ROOT)
@@ -101,7 +104,7 @@ jobs:
           one_lineage_bytes=one_receipt.read_bytes(); one_lineage=json.loads(one_lineage_bytes)
           if one_lineage['lineage_sha256']!=one['lineage_sha256'] or len(one_lineage['holes'])!=2 or len(one_lineage['steps'])!=2: raise RuntimeError('stage-one lineage receipt drifted')
 
-          stage_two_spec=spec('Creative Render resumed three-hole stage',[hole('middle',(0.0,0.0,.24),.09,16)])
+          stage_two_spec=spec('Creative Render resumed three-hole stage',[hole('middle',(0.0,.15,0.0),.07,16)])
           direct_two_a=build_hole_fabrication_chain(one_path,stage_two_spec,lineage_path=one_receipt,expected_source_sha256=one_sha,expected_lineage_sha256=one['lineage_sha256'])
           direct_two_b=build_hole_fabrication_chain(one_path,stage_two_spec,lineage_path=one_receipt,expected_source_sha256=one_sha,expected_lineage_sha256=one['lineage_sha256'])
           if direct_two_a['surface_specification']!=direct_two_b['surface_specification'] or direct_two_a['lineage']!=direct_two_b['lineage']: raise RuntimeError('same resumed hole-chain request did not repeat identically')
@@ -206,7 +209,7 @@ jobs:
             if(renders[name].scene_sha256!==sceneEvidence.outputs[key].sha256)throw new Error(`${name} scene changed before render evidence binding`);
           }
           if(new Set(Object.values(renders).map(x=>x.frame_sha256)).size!==3)throw new Error('root/two-hole/three-hole native frame bytes were not all distinct');
-          const evidence={contract:'AXM_CREATIVE_UC_MULTI_HOLE_CHAIN_NATIVE_RENDER_EVIDENCE',version:1,scene_evidence_sha256:sha(sceneEvidenceBytes),renders,donor:sceneEvidence.observation.donor,render_receipt_replay:{source:'PASS','stage-one':'PASS','stage-two':'PASS'},same_adapter_albedo:sceneEvidence.observation.same_adapter_albedo,authority:sceneEvidence.observation.authority,truth_boundary:{proves:'the pinned current UC v0.5 public hole-chain route created a two-hole derived GLB and hash-linked receipt, deterministically reconstructed that prior output before resuming to a three-hole derived GLB without rewriting the retained hole/step lineage, and all three same-albedo geometry states became independently receipt-verified native Render Fabric pixels',does_not_prove:'general cut-output chaining, arbitrary-mesh CSG, cross-axis or mixed notch/hole chains, non-separable layouts, rich material/UV/rig preservation, cryptographic authorship, manufacturing/structural correctness, host import, aesthetic quality, or cross-machine bitwise determinism'}};
+          const evidence={contract:'AXM_CREATIVE_UC_MULTI_HOLE_CHAIN_NATIVE_RENDER_EVIDENCE',version:1,scene_evidence_sha256:sha(sceneEvidenceBytes),renders,donor:sceneEvidence.observation.donor,render_receipt_replay:{source:'PASS','stage-one':'PASS','stage-two':'PASS'},same_adapter_albedo:sceneEvidence.observation.same_adapter_albedo,proof_view:{reference_renderer_projection:'X/Y screen coordinates with Z depth',fabrication_axis_selected_for_observability:'Z',claim:'bounded proof-view choice only; not general camera or viewpoint coverage'},authority:sceneEvidence.observation.authority,truth_boundary:{proves:'the pinned current UC v0.5 public hole-chain route created a two-hole derived GLB and hash-linked receipt, deterministically reconstructed that prior output before resuming to a three-hole derived GLB without rewriting the retained hole/step lineage, and all three same-albedo geometry states became independently receipt-verified and observably distinct native Render Fabric pixels in the declared reference proof view',does_not_prove:'general cut-output chaining, arbitrary-mesh CSG, cross-axis or mixed notch/hole chains, non-separable layouts, arbitrary camera/viewpoint observability, rich material/UV/rig preservation, cryptographic authorship, manufacturing/structural correctness, host import, aesthetic quality, or cross-machine bitwise determinism'}};
           await writeFile(base+'native-evidence.json',JSON.stringify(evidence,null,2)+'\n');
           console.log('uc_multi_hole_chain_native_render=PASS'); console.log(`frame_sha256=${Object.values(renders).map(x=>x.frame_sha256).join(',')}`);
           NODE
