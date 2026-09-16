@@ -1,0 +1,190 @@
+name: uc-direction-lock-guarded-native
+
+on:
+  pull_request:
+    paths:
+      - 'src/uc_direction_lock_guarded_native_bridge.mjs'
+      - 'src/uc_direction_lock_guarded_native_cli.mjs'
+      - 'tests/uc_direction_lock_guarded_native_bridge.test.mjs'
+      - '.github/workflows/uc-direction-lock-guarded-native.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/uc_direction_lock_guarded_native_bridge.mjs'
+      - 'src/uc_direction_lock_guarded_native_cli.mjs'
+      - 'tests/uc_direction_lock_guarded_native_bridge.test.mjs'
+      - '.github/workflows/uc-direction-lock-guarded-native.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-current-uc-direction-lock-guarded-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Universal Creation
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-universal-creation
+          ref: a05f5fb083ad1454a0d92d001e0d3994a779826f
+          path: universal-creation
+
+      - name: Checkout pinned Render Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Prepare retained proof directory
+        run: |
+          mkdir -p creative-render/build/uc-direction-lock-guarded-native
+          cat > creative-render/build/uc-direction-lock-guarded-native/donor-revisions.json <<'EOF'
+          {
+            "universal_creation": "a05f5fb083ad1454a0d92d001e0d3994a779826f",
+            "render_fabric": "6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b"
+          }
+          EOF
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Verify retained UC composer and guarded wrappers
+        run: |
+          node universal-creation/capabilities/physics-core/constraint-composer-selftest.js
+          node universal-creation/capabilities/physics-core/constraint-collision-isolation-selftest.js
+          node universal-creation/capabilities/physics-core/constraint-activity-gate-selftest.js
+          node universal-creation/capabilities/physics-core/direction-lock-integration-selftest.js
+
+      - name: Build guarded direction-lock proof
+        run: |
+          base=creative-render/build/uc-direction-lock-guarded-native
+          node creative-render/src/uc_direction_lock_guarded_native_cli.mjs build \
+            --uc-root universal-creation \
+            --uc-revision a05f5fb083ad1454a0d92d001e0d3994a779826f \
+            --source-scene "$base/source.axmscene" \
+            --disabled-scene "$base/disabled.axmscene" \
+            --enabled-scene "$base/enabled.axmscene" \
+            --receipt "$base/guarded-direction-lock.receipt.json"
+
+      - name: Independently assert authority, activity and isolation evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { parseScene } from './creative-render/src/creative_scene_operator.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/uc-direction-lock-guarded-native/';
+          const [receiptBytes,sourceScene,disabledScene,enabledScene]=await Promise.all([
+            readFile(base+'guarded-direction-lock.receipt.json'),readFile(base+'source.axmscene'),
+            readFile(base+'disabled.axmscene'),readFile(base+'enabled.axmscene')
+          ]);
+          const receipt=JSON.parse(receiptBytes.toString('utf8'));
+          if(receipt.contract!=='AXM_CREATIVE_UC_DIRECTION_LOCK_GUARDED_NATIVE_RECEIPT'||receipt.version!==1)throw new Error('guarded receipt contract drifted');
+          if(receipt.donor.revision!=='a05f5fb083ad1454a0d92d001e0d3994a779826f'||receipt.donor.activity_gate_version!=='0.4.0')throw new Error('current UC guarded donor was not exercised');
+          if(JSON.stringify(receipt.donor.activity_gate_family_keys)!==JSON.stringify(['mounts','distanceJoints','distanceLimits','axisLocks','axisLimits','directionLocks']))throw new Error('activity-gate six-family boundary drifted');
+          if(receipt.caller_authority.source_state_mutated!==false||receipt.caller_authority.constraint_requests_mutated!==false||receipt.caller_authority.explicit_toggle_only!==true)throw new Error('caller authority boundary failed');
+          if(receipt.caller_authority.invalid_disabled_body_reference_rejected!==true)throw new Error('disabled source-integrity validation was not retained');
+          if(receipt.disabled_branch.active_count!==0||receipt.disabled_branch.disabled_count!==1)throw new Error('disabled activity counts drifted');
+          if(JSON.stringify(receipt.disabled_branch.disabled_ids.directionLocks)!==JSON.stringify(['caller-diagonal']))throw new Error('disabled direction-lock identity missing');
+          if(receipt.disabled_branch.disabled_excluded_from_solve!==true||receipt.disabled_branch.disabled_excluded_from_isolation_topology!==true)throw new Error('disabled exclusion semantics drifted');
+          if(receipt.disabled_branch.isolation_component_count!==0||receipt.disabled_branch.isolation_applied_components!==0)throw new Error('disabled direction lock entered isolation topology');
+          if(receipt.disabled_branch.donor_core_contact_present!==true)throw new Error('disabled direction lock suppressed ordinary donor-core contact');
+          if(receipt.enabled_branch.active_count!==1||receipt.enabled_branch.disabled_count!==0)throw new Error('enabled activity counts drifted');
+          if(JSON.stringify(receipt.enabled_branch.active_ids.directionLocks)!==JSON.stringify(['caller-diagonal']))throw new Error('enabled direction-lock identity missing');
+          if(receipt.enabled_branch.isolation_component_count!==1||receipt.enabled_branch.isolation_applied_components!==1||receipt.enabled_branch.temporary_group!==-1||receipt.enabled_branch.groups_restored!==true)throw new Error('enabled isolation evidence drifted');
+          if(receipt.enabled_branch.donor_core_contact_present!==false)throw new Error('enabled isolated direction lock retained an in-component donor-core contact');
+          if(!(Math.abs(receipt.enabled_branch.max_direction_lock_error_after_stabilization)<=1e-8))throw new Error('enabled projection was not stabilized inside proof tolerance');
+          if(receipt.disabled_branch.repeat_verification!=='PASS'||receipt.enabled_branch.repeat_verification!=='PASS')throw new Error('same-runtime replay proof failed');
+          if(receipt.outputs.source_scene.sha256!==sha(sourceScene)||receipt.outputs.disabled_scene.sha256!==sha(disabledScene)||receipt.outputs.enabled_scene.sha256!==sha(enabledScene))throw new Error('derived scene byte lineage drifted');
+          if(receipt.outputs.disabled_scene.sha256===receipt.outputs.enabled_scene.sha256)throw new Error('disabled/enabled derived scenes unexpectedly match');
+          for(const bytes of [sourceScene,disabledScene,enabledScene]){
+            const scene=parseScene(bytes.toString('utf8'));
+            if(scene.triangles.length!==4)throw new Error('bounded guarded render adapter triangle count drifted');
+            if(JSON.stringify(scene.triangles[0].albedo)!==JSON.stringify([90,110,145])||JSON.stringify(scene.triangles[2].albedo)!==JSON.stringify([224,166,72]))throw new Error('guarded render adapter albedo drifted');
+          }
+          const evidence={
+            contract:'AXM_CREATIVE_UC_DIRECTION_LOCK_GUARDED_INDEPENDENT_EVIDENCE',version:1,
+            creative_receipt_sha256:sha(receiptBytes),source_scene_sha256:sha(sourceScene),disabled_scene_sha256:sha(disabledScene),enabled_scene_sha256:sha(enabledScene),
+            gates:{caller_authority:'PASS',disabled_retained_but_excluded:'PASS',disabled_contact_preserved:'PASS',enabled_component_isolation:'PASS',enabled_contact_suppressed:'PASS',collision_groups_restored:'PASS',projection_stabilized:'PASS',same_runtime_repeat:'PASS'}
+          };
+          await writeFile(base+'independent-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('uc_direction_lock_guarded_independent_evidence=PASS');
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify all guarded candidates
+        run: |
+          base=creative-render/build/uc-direction-lock-guarded-native
+          for name in source disabled enabled; do
+            cat > "$base/$name.axmrender" <<EOF
+          AXM_RENDER_REQUEST 1
+          scene $name.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output $name.ppm
+          EOF
+            render-fabric/build/axm-render --request "$base/$name.axmrender" --receipt "$base/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$base/$name.axmrender" "$base/$name.axmreceipt"
+          done
+
+      - name: Bind guarded state choices to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile,writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/uc-direction-lock-guarded-native/';
+          const receiptBytes=await readFile(base+'guarded-direction-lock.receipt.json');
+          const receipt=JSON.parse(receiptBytes.toString('utf8'));
+          const names=['source','disabled','enabled'];
+          const renders={};
+          for(const name of names){
+            const [scene,frame,renderReceipt]=await Promise.all([readFile(base+name+'.axmscene'),readFile(base+name+'.ppm'),readFile(base+name+'.axmreceipt')]);
+            renders[name]={scene_sha256:sha(scene),frame_sha256:sha(frame),receipt_sha256:sha(renderReceipt)};
+          }
+          if(renders.disabled.frame_sha256===renders.enabled.frame_sha256)throw new Error('disabled/enabled guarded UC branches did not reach distinct native frame bytes');
+          const evidence={
+            contract:'AXM_CREATIVE_UC_DIRECTION_LOCK_GUARDED_NATIVE_RENDER_EVIDENCE',version:1,
+            creative_receipt_sha256:sha(receiptBytes),uc_revision:receipt.donor.revision,activity_gate_version:receipt.donor.activity_gate_version,
+            renders,render_receipt_replay:{source:'PASS',disabled:'PASS',enabled:'PASS'},
+            observed_native_difference:{disabled_vs_enabled:true},
+            authority:{source_world_and_explicit_requests:'CALLER_AUTHORITATIVE',simulated_branches:'DERIVED_UC_RESULTS',scenes:'DERIVED_REPLACEABLE_VISUALIZATIONS',pixels:'DERIVED_RENDER_FABRIC_OUTPUT'},
+            truth_boundary:{
+              proves:'current UC fixed-direction locks survive explicit activity gating and component collision isolation with disabled contact preserved, enabled in-component contact suppressed during the donor-core stage, restored caller groups, stabilized projection and independently receipt-verified native pixel evidence',
+              does_not_prove:'full slider/prismatic joints, rotating local axes, edge-only isolation, general collision correctness, 3D/scientific physics, gameplay correctness or aesthetic quality'
+            }
+          };
+          await writeFile(base+'native-render-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('uc_direction_lock_guarded_native_render=PASS');
+          console.log(`source_frame_sha256=${renders.source.frame_sha256}`);
+          console.log(`disabled_frame_sha256=${renders.disabled.frame_sha256}`);
+          console.log(`enabled_frame_sha256=${renders.enabled.frame_sha256}`);
+          NODE
+
+      - name: Upload retained guarded direction-lock proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-uc-direction-lock-guarded-native-proof
+          path: creative-render/build/uc-direction-lock-guarded-native/
+          if-no-files-found: warn
