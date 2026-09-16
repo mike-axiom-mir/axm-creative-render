@@ -1,6 +1,6 @@
 {
   "name": "axm-creative-render",
-  "version": "0.27.0",
+  "version": "0.28.0",
   "private": true,
   "type": "module",
   "description": "Experimental creative operators and explicit donor bridges over renderer-consumable canonical state.",
@@ -21,6 +21,7 @@
     "vfx-transient-field-modulation": "node src/vfx_transient_field_modulation_cli.mjs build",
     "vfx-electric-field-modulation": "node src/vfx_electric_field_modulation_cli.mjs build",
     "vfx-electric-svg-browser": "node src/vfx_electric_svg_browser_cli.mjs build",
+    "vfx-holographic-field-modulation": "node src/vfx_holographic_field_modulation_cli.mjs build",
     "uc-oriented-cut-render": "node src/uc_oriented_cut_cli.mjs build",
     "uc-multi-hole-chain-render": "node src/uc_multi_hole_chain_cli.mjs build",
     "uc-mixed-fabrication-render": "node src/uc_mixed_fabrication_cli.mjs build",
