@@ -1,0 +1,202 @@
+name: uc-direction-lock-native
+
+on:
+  pull_request:
+    paths:
+      - 'src/uc_direction_lock_native_bridge.mjs'
+      - 'src/uc_direction_lock_native_cli.mjs'
+      - 'tests/uc_direction_lock_native_bridge.test.mjs'
+      - '.github/workflows/uc-direction-lock-native.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/uc_direction_lock_native_bridge.mjs'
+      - 'src/uc_direction_lock_native_cli.mjs'
+      - 'tests/uc_direction_lock_native_bridge.test.mjs'
+      - '.github/workflows/uc-direction-lock-native.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-current-uc-direction-lock-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Universal Creation
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-universal-creation
+          ref: f5ccd414fc1824d0f810440caee38764c946a281
+          path: universal-creation
+
+      - name: Checkout pinned Render Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Prepare retained proof directory
+        run: |
+          mkdir -p creative-render/build/uc-direction-lock-native
+          cat > creative-render/build/uc-direction-lock-native/donor-revisions.json <<'EOF'
+          {
+            "universal_creation": "f5ccd414fc1824d0f810440caee38764c946a281",
+            "render_fabric": "6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b"
+          }
+          EOF
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Verify current UC shared constraint composer
+        run: node universal-creation/capabilities/physics-core/constraint-composer-selftest.js
+
+      - name: Verify current UC fixed-direction lock donor
+        run: node universal-creation/capabilities/physics-core/direction-locks-selftest.js
+
+      - name: Build current UC direction-lock proof
+        run: |
+          base=creative-render/build/uc-direction-lock-native
+          node creative-render/src/uc_direction_lock_native_cli.mjs build \
+            --uc-root universal-creation \
+            --uc-revision f5ccd414fc1824d0f810440caee38764c946a281 \
+            --source-scene "$base/source.axmscene" \
+            --locked-scene "$base/locked.axmscene" \
+            --trace "$base/direction-lock-trace.json" \
+            --receipt "$base/direction-lock.receipt.json"
+
+      - name: Independently assert authority, composer and motion evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { parseScene } from './creative-render/src/creative_scene_operator.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/uc-direction-lock-native/';
+          const [receiptBytes,sourceScene,lockedScene,traceBytes]=await Promise.all([
+            readFile(base+'direction-lock.receipt.json'),
+            readFile(base+'source.axmscene'),
+            readFile(base+'locked.axmscene'),
+            readFile(base+'direction-lock-trace.json')
+          ]);
+          const receipt=JSON.parse(receiptBytes.toString('utf8'));
+          if(receipt.contract!=='AXM_CREATIVE_UC_DIRECTION_LOCK_NATIVE_RECEIPT'||receipt.version!==1)throw new Error('direction-lock receipt contract drifted');
+          if(receipt.donor.revision!=='f5ccd414fc1824d0f810440caee38764c946a281'||receipt.donor.constraint_composer_version!=='0.6.0')throw new Error('pinned current UC composer was not exercised');
+          if(JSON.stringify(receipt.composer.family_order)!==JSON.stringify(['translation-mounts','distance-joints','distance-limits','axis-locks','axis-limits','direction-locks']))throw new Error('shared composer family order drifted');
+          if(receipt.composer.active_family!=='direction-locks'||receipt.composer.direction_lock_count!==1)throw new Error('direction-lock family was not the bounded active family');
+          if(receipt.composer.one_donor_core_integration_per_step!==true||receipt.composer.repeat_verification!=='PASS')throw new Error('single-core-step/repeat gate failed');
+          if(!(receipt.composer.max_after_core_direction_lock_error>1e-4))throw new Error('proof did not retain measurable donor-core direction drift');
+          if(!(receipt.composer.max_after_stabilization_direction_lock_error<=1e-8)||!(receipt.composer.final_projection_error<=1e-8))throw new Error('fixed-direction projection was not restored tightly');
+          if(!(Math.abs(receipt.composer.perpendicular_translation_delta)>0.05))throw new Error('perpendicular translation did not remain observably free');
+          if(receipt.caller_authority.source_state_mutated!==false||receipt.caller_authority.constraint_request_mutated!==false)throw new Error('caller authority boundary failed');
+          if(receipt.outputs.source_scene.sha256!==sha(sourceScene)||receipt.outputs.locked_scene.sha256!==sha(lockedScene)||receipt.outputs.trace.sha256!==sha(traceBytes))throw new Error('derived output byte lineage drifted');
+          if(receipt.outputs.source_scene.sha256===receipt.outputs.locked_scene.sha256)throw new Error('derived source/final scenes did not differ');
+          const source=parseScene(sourceScene.toString('utf8')),locked=parseScene(lockedScene.toString('utf8'));
+          if(source.triangles.length!==4||locked.triangles.length!==4)throw new Error('bounded render adapter triangle count drifted');
+          for(let i=0;i<4;i++)if(JSON.stringify(source.triangles[i].albedo)!==JSON.stringify(locked.triangles[i].albedo))throw new Error('render adapter changed albedo while proving translation');
+          if(JSON.stringify(source.triangles.slice(0,2))!==JSON.stringify(locked.triangles.slice(0,2)))throw new Error('anchor geometry moved unexpectedly');
+          if(JSON.stringify(source.triangles.slice(2))===JSON.stringify(locked.triangles.slice(2)))throw new Error('payload geometry did not move');
+          const independent={
+            contract:'AXM_CREATIVE_UC_DIRECTION_LOCK_INDEPENDENT_EVIDENCE',version:1,
+            creative_receipt_sha256:sha(receiptBytes),
+            source_scene_sha256:sha(sourceScene),locked_scene_sha256:sha(lockedScene),trace_sha256:sha(traceBytes),
+            gates:{caller_authority:'PASS',shared_composer_order:'PASS',one_core_step_per_step:'PASS',locked_projection:'PASS',free_perpendicular_translation:'PASS',same_runtime_repeat:'PASS'}
+          };
+          await writeFile(base+'independent-evidence.json',JSON.stringify(independent,null,2)+'\n');
+          console.log('uc_direction_lock_independent_evidence=PASS');
+          console.log(`max_after_core_error=${receipt.composer.max_after_core_direction_lock_error}`);
+          console.log(`max_after_stabilization_error=${receipt.composer.max_after_stabilization_direction_lock_error}`);
+          console.log(`perpendicular_translation_delta=${receipt.composer.perpendicular_translation_delta}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify source and constrained candidates
+        run: |
+          base=creative-render/build/uc-direction-lock-native
+          cat > "$base/source.axmrender" <<'EOF'
+          AXM_RENDER_REQUEST 1
+          scene source.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output source.ppm
+          EOF
+          cat > "$base/locked.axmrender" <<'EOF'
+          AXM_RENDER_REQUEST 1
+          scene locked.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output locked.ppm
+          EOF
+          for name in source locked; do
+            render-fabric/build/axm-render --request "$base/$name.axmrender" --receipt "$base/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$base/$name.axmrender" "$base/$name.axmreceipt"
+          done
+
+      - name: Bind current UC constrained motion to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile,writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/uc-direction-lock-native/';
+          const [receiptBytes,sourceFrame,lockedFrame,sourceScene,lockedScene,sourceRenderReceipt,lockedRenderReceipt]=await Promise.all([
+            readFile(base+'direction-lock.receipt.json'),readFile(base+'source.ppm'),readFile(base+'locked.ppm'),
+            readFile(base+'source.axmscene'),readFile(base+'locked.axmscene'),readFile(base+'source.axmreceipt'),readFile(base+'locked.axmreceipt')
+          ]);
+          const receipt=JSON.parse(receiptBytes.toString('utf8'));
+          const sourceFrameSha=sha(sourceFrame),lockedFrameSha=sha(lockedFrame);
+          if(sourceFrameSha===lockedFrameSha)throw new Error('valid free perpendicular translation did not reach distinct native frame bytes');
+          const evidence={
+            contract:'AXM_CREATIVE_UC_DIRECTION_LOCK_NATIVE_RENDER_EVIDENCE',version:1,
+            creative_receipt_sha256:sha(receiptBytes),
+            uc_revision:receipt.donor.revision,
+            composer_version:receipt.donor.constraint_composer_version,
+            final_checksum:receipt.composer.final_checksum,
+            projection_error:receipt.composer.final_projection_error,
+            perpendicular_translation_delta:receipt.composer.perpendicular_translation_delta,
+            renders:{
+              source:{scene_sha256:sha(sourceScene),frame_sha256:sourceFrameSha,receipt_sha256:sha(sourceRenderReceipt)},
+              locked:{scene_sha256:sha(lockedScene),frame_sha256:lockedFrameSha,receipt_sha256:sha(lockedRenderReceipt)}
+            },
+            render_receipt_replay:{source:'PASS',locked:'PASS'},
+            authority:{source_world_and_constraint_request:'CALLER_AUTHORITATIVE',simulation:'DERIVED_UC_RESULT',scenes:'DERIVED_REPLACEABLE_VISUALIZATIONS',pixels:'DERIVED_RENDER_FABRIC_OUTPUT'},
+            truth_boundary:{
+              proves:'a current UC fixed-direction lock preserved the selected world-space projection while allowing perpendicular translation, and the derived before/after states reached distinct independently receipt-verified native pixels',
+              does_not_prove:'full prismatic joints, angular constraints, direction-lock activity/isolation integration, collision correctness, 3D physics, scientific validity, gameplay or aesthetic quality'
+            }
+          };
+          await writeFile(base+'native-render-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('uc_direction_lock_native_render=PASS');
+          console.log(`source_frame_sha256=${sourceFrameSha}`);
+          console.log(`locked_frame_sha256=${lockedFrameSha}`);
+          NODE
+
+      - name: Upload retained UC direction-lock proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-uc-direction-lock-native-proof
+          path: creative-render/build/uc-direction-lock-native/
+          if-no-files-found: warn
