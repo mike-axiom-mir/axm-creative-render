@@ -1,0 +1,204 @@
+name: vfx-path-flow-displacement-native
+
+on:
+  pull_request:
+    paths:
+      - 'src/vfx_path_flow_displacement_bridge.mjs'
+      - 'src/vfx_path_flow_displacement_cli.mjs'
+      - 'tests/vfx_path_flow_displacement_bridge.test.mjs'
+      - '.github/workflows/vfx-path-flow-displacement-native.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/vfx_path_flow_displacement_bridge.mjs'
+      - 'src/vfx_path_flow_displacement_cli.mjs'
+      - 'tests/vfx_path_flow_displacement_bridge.test.mjs'
+      - '.github/workflows/vfx-path-flow-displacement-native.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-current-vfx-path-flow-displacement-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: 6c4778c565321b4b58d03bb95b171465554df6d5
+          path: visual-effect-fabric
+
+      - name: Checkout pinned Render Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Prepare retained proof directory
+        run: |
+          mkdir -p creative-render/build/vfx-path-flow-displacement-native
+          cat > creative-render/build/vfx-path-flow-displacement-native/donor-revisions.json <<'EOF'
+          {
+            "visual_effect_fabric": "6c4778c565321b4b58d03bb95b171465554df6d5",
+            "render_fabric": "6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b"
+          }
+          EOF
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Build zero and active path-flow proof
+        run: |
+          base=creative-render/build/vfx-path-flow-displacement-native
+          node creative-render/src/vfx_path_flow_displacement_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --vfx-revision 6c4778c565321b4b58d03bb95b171465554df6d5 \
+            --source-paths "$base/source-paths.json" \
+            --zero-scene "$base/zero.axmscene" \
+            --flowed-scene "$base/flowed.axmscene" \
+            --zero-state "$base/zero-state.json" \
+            --flowed-state "$base/flowed-state.json" \
+            --receipt "$base/path-flow.receipt.json"
+
+      - name: Independently assert authority, lineage and adapter evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { parseScene } from './creative-render/src/creative_scene_operator.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-path-flow-displacement-native/';
+          const [receiptBytes,sourcePathsBytes,zeroSceneBytes,flowedSceneBytes,zeroStateBytes,flowedStateBytes,donorBytes]=await Promise.all([
+            readFile(base+'path-flow.receipt.json'),readFile(base+'source-paths.json'),readFile(base+'zero.axmscene'),readFile(base+'flowed.axmscene'),
+            readFile(base+'zero-state.json'),readFile(base+'flowed-state.json'),readFile(base+'donor-revisions.json')
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          const donors=JSON.parse(donorBytes.toString('utf8'));
+          if(donors.visual_effect_fabric!=='6c4778c565321b4b58d03bb95b171465554df6d5'||donors.render_fabric!=='6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b')throw new Error('pinned donor revision evidence drifted');
+          if(r.contract!=='AXM_CREATIVE_VFX_PATH_FLOW_DISPLACEMENT_RECEIPT'||r.version!==1)throw new Error('path-flow receipt contract drifted');
+          if(r.donor.revision!==donors.visual_effect_fabric||r.donor.graph_id!=='fx.path.flow-displace2d'||r.donor.graph_version!=='0.1.0')throw new Error('current VFX path-flow graph was not exercised');
+          if(JSON.stringify(r.donor.hand_ids)!==JSON.stringify(['fx.path.flow-displacement-source-normalize','fx.path.flow-displacement-build']))throw new Error('VFX path-flow Hand boundary drifted');
+          if(r.caller_authority.source_paths_mutated!==false||r.caller_authority.path_metadata_preserved!==true||r.caller_authority.point_metadata_preserved!==true||r.caller_authority.consumer_meaning_assigned!==false)throw new Error('caller path authority boundary failed');
+          if(r.outputs.source_paths.sha256!==sha(sourcePathsBytes)||r.outputs.zero_state.sha256!==sha(zeroStateBytes)||r.outputs.active_state.sha256!==sha(flowedStateBytes))throw new Error('source/state byte binding drifted');
+          if(r.outputs.zero_scene.sha256!==sha(zeroSceneBytes)||r.outputs.active_scene.sha256!==sha(flowedSceneBytes))throw new Error('scene byte binding drifted');
+          if(r.zero_amplitude.caller_neutral_repeat_verification!=='PASS'||r.active_flow.caller_neutral_repeat_verification!=='PASS')throw new Error('caller-neutral repeat verification failed');
+          if(r.zero_amplitude.exact_derived_noop_verified!==true||r.zero_amplitude.max_displacement!==0||r.zero_amplitude.changed_interior_points!==0)throw new Error('zero amplitude did not remain exact derived no-op');
+          if(!(r.active_flow.max_displacement>0)||!(r.active_flow.changed_interior_points>0))throw new Error('active path flow did not displace interior coordinates');
+          if(r.zero_amplitude.endpoint_preservation_verified!==true||r.active_flow.endpoint_preservation_verified!==true)throw new Error('endpoint envelope evidence failed');
+          if(r.zero_amplitude.displacement_source_hash===r.active_flow.displacement_source_hash||r.zero_amplitude.path_set_hash===r.active_flow.path_set_hash)throw new Error('explicit amplitude challenge did not change derived identities');
+          for(const row of [r.zero_amplitude,r.active_flow]){
+            if(row.path_set.schema!=='axm.flow-guided-path-set/v0.1'||row.path_set.derived!==true||row.path_set.rebuildable!==true)throw new Error('derived path-set truth boundary drifted');
+            if(row.path_set.path_count!==2||row.path_set.point_count!==10)throw new Error('bounded caller path fixture cardinality drifted');
+            if(row.scene_adapter.geometry_encodes_derived_path_coordinates!==true||row.scene_adapter.albedo_is_constant_observation_style!==true||row.scene_adapter.consumer_semantics_preserved!==false)throw new Error('replaceable scene-adapter boundary drifted');
+          }
+          if(sha(zeroSceneBytes)===sha(flowedSceneBytes))throw new Error('active path flow produced identical derived scene bytes');
+          const zeroScene=parseScene(zeroSceneBytes.toString('utf8')),flowedScene=parseScene(flowedSceneBytes.toString('utf8'));
+          if(zeroScene.triangles.length!==16||flowedScene.triangles.length!==16)throw new Error('expected bounded 8-segment/16-triangle adapter was not exercised');
+          const zeroAlbedo=zeroScene.triangles.map(t=>t.albedo),flowedAlbedo=flowedScene.triangles.map(t=>t.albedo);
+          if(JSON.stringify(zeroAlbedo)!==JSON.stringify(flowedAlbedo))throw new Error('path-flow observation styling changed across derived geometry states');
+          if(zeroScene.triangles.some(t=>JSON.stringify(t.albedo)!==JSON.stringify([72,190,220])))throw new Error('path-flow observation style is not constant');
+          const zeroGeometry=zeroScene.triangles.map(t=>t.vertices),flowedGeometry=flowedScene.triangles.map(t=>t.vertices);
+          if(JSON.stringify(zeroGeometry)===JSON.stringify(flowedGeometry))throw new Error('active path displacement did not reach scene geometry');
+          const evidence={
+            contract:'AXM_CREATIVE_VFX_PATH_FLOW_INDEPENDENT_EVIDENCE',version:1,
+            creative_receipt_sha256:sha(receiptBytes),donor_revisions:donors,
+            retained_sources:r.shared_retained_sources,
+            gates:{caller_path_authority:'PASS',metadata_preserved:'PASS',zero_amplitude_exact_noop:'PASS',endpoint_envelope_pinned:'PASS',active_interior_displacement:'PASS',derived_identity_changed:'PASS',constant_style_geometry_adapter:'PASS',same_runtime_caller_neutral_repeat:'PASS'}
+          };
+          await writeFile(base+'independent-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_path_flow_independent_evidence=PASS');
+          console.log(`source_path_hash=${r.shared_retained_sources.path_source_hash}`);
+          console.log(`flow_source_hash=${r.shared_retained_sources.flow_source_hash}`);
+          console.log(`zero_path_set_hash=${r.zero_amplitude.path_set_hash}`);
+          console.log(`flowed_path_set_hash=${r.active_flow.path_set_hash}`);
+          console.log(`active_max_displacement=${r.active_flow.max_displacement}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify both path-flow candidates
+        run: |
+          base=creative-render/build/vfx-path-flow-displacement-native
+          for name in zero flowed; do
+            cat > "$base/$name.axmrender" <<EOF
+          AXM_RENDER_REQUEST 1
+          scene $name.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output $name.ppm
+          EOF
+            render-fabric/build/axm-render --request "$base/$name.axmrender" --receipt "$base/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$base/$name.axmrender" "$base/$name.axmreceipt"
+          done
+
+      - name: Bind flow-guided geometry to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile,writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-path-flow-displacement-native/';
+          const receiptBytes=await readFile(base+'path-flow.receipt.json');
+          const receipt=JSON.parse(receiptBytes.toString('utf8'));
+          const renders={};
+          for(const name of ['zero','flowed']){
+            const [scene,request,renderReceipt,frame]=await Promise.all([
+              readFile(base+name+'.axmscene'),readFile(base+name+'.axmrender'),readFile(base+name+'.axmreceipt'),readFile(base+name+'.ppm')
+            ]);
+            renders[name]={scene_sha256:sha(scene),request_sha256:sha(request),receipt_sha256:sha(renderReceipt),frame_sha256:sha(frame),frame_bytes:frame.length};
+          }
+          if(renders.zero.scene_sha256!==receipt.outputs.zero_scene.sha256||renders.flowed.scene_sha256!==receipt.outputs.active_scene.sha256)throw new Error('scene identity changed before native rendering');
+          if(renders.zero.frame_sha256===renders.flowed.frame_sha256)throw new Error('active flow-guided geometry did not reach distinct native frame bytes');
+          const evidence={
+            contract:'AXM_CREATIVE_VFX_PATH_FLOW_NATIVE_EVIDENCE',version:1,
+            creative_receipt_sha256:sha(receiptBytes),
+            donor_revisions:{visual_effect_fabric:'6c4778c565321b4b58d03bb95b171465554df6d5',render_fabric:'6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b'},
+            retained_sources:receipt.shared_retained_sources,
+            zero_displacement_source_hash:receipt.zero_amplitude.displacement_source_hash,
+            active_displacement_source_hash:receipt.active_flow.displacement_source_hash,
+            zero_path_set_hash:receipt.zero_amplitude.path_set_hash,
+            active_path_set_hash:receipt.active_flow.path_set_hash,
+            active_max_displacement:receipt.active_flow.max_displacement,
+            renders,render_receipt_replay:{zero:'PASS',flowed:'PASS'},
+            authority:{caller_paths:'CALLER_CANONICAL_PATH_SOURCE',vfx_sources:'RETAINED_VFX_SCALAR_VECTOR_AND_DISPLACEMENT_SOURCES',path_sets:'DERIVED_REBUILDABLE_VFX_WORKING_SETS',scenes:'DERIVED_REPLACEABLE_VISUALIZATIONS',pixels:'DERIVED_RENDER_FABRIC_OUTPUT'},
+            truth_boundary:{
+              proves:'the current VFX renderer-neutral flow-guided path graph preserves caller-owned path topology and metadata plus retained scalar/vector source identity across an explicit zero-to-active amplitude change, keeps zero amplitude as an exact derived no-op, pins endpoints when requested, displaces only interior coordinates in a bounded derived path set, and reaches independently receipt-verified native pixels through one constant-style geometry adapter',
+              does_not_prove:'electrical/crack/root/vein/river/trail/particle/brush/game/UI/world semantics, physical flow accuracy, animation/temporal continuity, visual quality, target-device performance, GPU/browser parity or cross-machine bitwise determinism'
+            }
+          };
+          await writeFile(base+'native-render-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_path_flow_native_render=PASS');
+          console.log(`zero_frame_sha256=${renders.zero.frame_sha256}`);
+          console.log(`flowed_frame_sha256=${renders.flowed.frame_sha256}`);
+          NODE
+
+      - name: Upload retained VFX path-flow native proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-path-flow-displacement-native-proof
+          path: creative-render/build/vfx-path-flow-displacement-native/
+          if-no-files-found: warn
