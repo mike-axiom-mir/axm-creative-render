@@ -1,6 +1,6 @@
 {
   "name": "axm-creative-render",
-  "version": "0.22.0",
+  "version": "0.23.0",
   "private": true,
   "type": "module",
   "description": "Experimental creative operators and explicit donor bridges over renderer-consumable canonical state.",
@@ -20,6 +20,7 @@
     "vfx-field-composition-native": "node src/vfx_field_composition_cli.mjs build",
     "uc-oriented-cut-render": "node src/uc_oriented_cut_cli.mjs build",
     "uc-multi-hole-chain-render": "node src/uc_multi_hole_chain_cli.mjs build",
+    "uc-rigid-scene-graph-render": "node src/uc_rigid_scene_graph_cli.mjs build",
     "temporal-snapshot": "node src/temporal_cli.mjs sample",
     "post-render": "node src/post_render_cli.mjs apply",
     "vfx-export": "node src/vfx_export_cli.mjs export",
