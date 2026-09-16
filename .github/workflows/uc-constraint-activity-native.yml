@@ -1,0 +1,178 @@
+name: uc-constraint-activity-native
+
+on:
+  pull_request:
+    paths:
+      - 'src/uc_constraint_activity_native_bridge.mjs'
+      - 'src/uc_constraint_activity_native_cli.mjs'
+      - 'tests/uc_constraint_activity_native_bridge.test.mjs'
+      - '.github/workflows/uc-constraint-activity-native.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/uc_constraint_activity_native_bridge.mjs'
+      - 'src/uc_constraint_activity_native_cli.mjs'
+      - 'tests/uc_constraint_activity_native_bridge.test.mjs'
+      - '.github/workflows/uc-constraint-activity-native.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-current-uc-constraint-activity-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Universal Creation
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-universal-creation
+          ref: f5ccd414fc1824d0f810440caee38764c946a281
+          path: universal-creation
+
+      - name: Checkout pinned Render Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Prepare retained proof directory
+        run: |
+          mkdir -p creative-render/build/uc-constraint-activity-native
+          cat > creative-render/build/uc-constraint-activity-native/donor-revisions.json <<'JSON'
+          {
+            "universal_creation": "f5ccd414fc1824d0f810440caee38764c946a281",
+            "render_fabric": "6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b"
+          }
+          JSON
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Verify current UC activity and isolation donors
+        run: |
+          node universal-creation/capabilities/physics-core/constraint-composer-selftest.js
+          node universal-creation/capabilities/physics-core/constraint-collision-isolation-selftest.js
+          node universal-creation/capabilities/physics-core/constraint-activity-gate-selftest.js
+
+      - name: Build current UC constraint-activity proof
+        run: |
+          base=creative-render/build/uc-constraint-activity-native
+          node creative-render/src/uc_constraint_activity_native_cli.mjs build \
+            --uc-root universal-creation \
+            --uc-revision f5ccd414fc1824d0f810440caee38764c946a281 \
+            --source-scene "$base/source.axmscene" \
+            --disabled-scene "$base/disabled.axmscene" \
+            --enabled-scene "$base/enabled.axmscene" \
+            --receipt "$base/activity.receipt.json"
+
+      - name: Independently assert agency and authority boundary
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { parseScene } from './creative-render/src/creative_scene_operator.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/uc-constraint-activity-native/';
+          const [receiptBytes,sourceBytes,disabledBytes,enabledBytes]=await Promise.all([
+            readFile(base+'activity.receipt.json'),readFile(base+'source.axmscene'),readFile(base+'disabled.axmscene'),readFile(base+'enabled.axmscene')
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          if(r.contract!=='AXM_CREATIVE_UC_CONSTRAINT_ACTIVITY_NATIVE_RECEIPT'||r.version!==1)throw new Error('activity receipt contract drifted');
+          if(r.donor.revision!=='f5ccd414fc1824d0f810440caee38764c946a281'||r.donor.activity_gate_version!=='0.3.0')throw new Error('pinned current activity gate was not exercised');
+          if(JSON.stringify(r.donor.activity_gate_family_keys)!==JSON.stringify(['mounts','distanceJoints','distanceLimits','axisLocks','axisLimits']))throw new Error('activity-gate family boundary drifted');
+          if(r.caller_authority.source_state_mutated!==false||r.caller_authority.constraint_requests_mutated!==false||r.caller_authority.explicit_toggle_only!==true)throw new Error('caller authority boundary failed');
+          if(r.disabled_branch.active_count!==0||r.disabled_branch.disabled_count!==3||r.disabled_branch.disabled_excluded_from_solve!==true||r.disabled_branch.disabled_excluded_from_isolation_topology!==true)throw new Error('disabled semantics drifted');
+          if(r.disabled_branch.isolation_component_count!==0||r.disabled_branch.isolation_applied_components!==0||r.disabled_branch.payload_translation_from_source>1e-12)throw new Error('disabled definitions affected topology or motion');
+          if(r.enabled_branch.active_count!==1||r.enabled_branch.disabled_count!==2||r.enabled_branch.isolation_component_count!==1||r.enabled_branch.isolation_applied_components!==1)throw new Error('enabled mount did not delegate through isolation');
+          if(r.enabled_branch.max_mount_error_after_stabilization>1e-8||!(r.enabled_branch.payload_translation_from_source>0.25))throw new Error('enabled mount did not create bounded constrained motion');
+          if(JSON.stringify(r.disabled_branch.disabled_ids.mounts)!==JSON.stringify(['caller-mount'])||JSON.stringify(r.enabled_branch.active_ids.mounts)!==JSON.stringify(['caller-mount']))throw new Error('caller mount identity drifted across toggle');
+          if(r.outputs.source_scene.sha256!==sha(sourceBytes)||r.outputs.disabled_scene.sha256!==sha(disabledBytes)||r.outputs.enabled_scene.sha256!==sha(enabledBytes))throw new Error('scene byte binding drifted');
+          if(sha(sourceBytes)!==sha(disabledBytes)||r.outputs.source_and_disabled_scene_bytes_equal!==true)throw new Error('disabled branch invented a visual difference');
+          if(sha(sourceBytes)===sha(enabledBytes)||r.outputs.enabled_scene_differs!==true)throw new Error('enabled branch did not reach a distinct derived scene');
+          const source=parseScene(sourceBytes.toString('utf8')),disabled=parseScene(disabledBytes.toString('utf8')),enabled=parseScene(enabledBytes.toString('utf8'));
+          if(JSON.stringify(source)!==JSON.stringify(disabled))throw new Error('disabled derived scene changed structurally');
+          if(source.triangles.length!==4||enabled.triangles.length!==4)throw new Error('bounded render adapter topology drifted');
+          if(JSON.stringify(source.triangles.slice(0,2))!==JSON.stringify(enabled.triangles.slice(0,2)))throw new Error('anchor geometry moved');
+          if(JSON.stringify(source.triangles.slice(2))===JSON.stringify(enabled.triangles.slice(2)))throw new Error('enabled payload geometry did not move');
+          if(JSON.stringify(source.triangles.map(x=>x.albedo))!==JSON.stringify(enabled.triangles.map(x=>x.albedo)))throw new Error('adapter changed albedo while proving activity semantics');
+          const evidence={contract:'AXM_CREATIVE_UC_CONSTRAINT_ACTIVITY_INDEPENDENT_EVIDENCE',version:1,creative_receipt_sha256:sha(receiptBytes),gates:{caller_authority:'PASS',disabled_retained_but_inert:'PASS',disabled_excluded_from_isolation:'PASS',enabled_mount_delegated:'PASS',same_runtime_repeat:'PASS',source_disabled_scene_identity:'PASS'}};
+          await writeFile(base+'independent-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('uc_constraint_activity_independent=PASS');
+          console.log(`disabled_payload_translation=${r.disabled_branch.payload_translation_from_source}`);
+          console.log(`enabled_payload_translation=${r.enabled_branch.payload_translation_from_source}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and replay-verify source, disabled and enabled branches
+        run: |
+          base=creative-render/build/uc-constraint-activity-native
+          for name in source disabled enabled; do
+            cat > "$base/$name.axmrender" <<EOF_REQ
+          AXM_RENDER_REQUEST 1
+          scene $name.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output $name.ppm
+          EOF_REQ
+            render-fabric/build/axm-render --request "$base/$name.axmrender" --receipt "$base/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$base/$name.axmrender" "$base/$name.axmreceipt"
+          done
+
+      - name: Bind explicit activity choice to native pixels
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/uc-constraint-activity-native/';
+          const receiptBytes=await readFile(base+'activity.receipt.json');
+          const receipt=JSON.parse(receiptBytes.toString('utf8'));
+          const rows={};
+          for(const name of ['source','disabled','enabled']){
+            const [scene,request,renderReceipt,frame]=await Promise.all([readFile(base+name+'.axmscene'),readFile(base+name+'.axmrender'),readFile(base+name+'.axmreceipt'),readFile(base+name+'.ppm')]);
+            rows[name]={scene_sha256:sha(scene),request_sha256:sha(request),receipt_sha256:sha(renderReceipt),frame_sha256:sha(frame),frame_bytes:frame.length};
+          }
+          if(rows.source.scene_sha256!==receipt.outputs.source_scene.sha256||rows.disabled.scene_sha256!==receipt.outputs.disabled_scene.sha256||rows.enabled.scene_sha256!==receipt.outputs.enabled_scene.sha256)throw new Error('scene identity changed before native rendering');
+          if(rows.source.frame_sha256!==rows.disabled.frame_sha256)throw new Error('disabled activity invented a native pixel difference');
+          if(rows.source.frame_sha256===rows.enabled.frame_sha256)throw new Error('enabled activity did not reach distinct native frame bytes');
+          const evidence={
+            contract:'AXM_CREATIVE_UC_CONSTRAINT_ACTIVITY_NATIVE_RENDER_EVIDENCE',version:1,
+            creative_receipt_sha256:sha(receiptBytes),uc_revision:receipt.donor.revision,activity_gate_version:receipt.donor.activity_gate_version,
+            renders:rows,render_receipt_replay:{source:'PASS',disabled:'PASS',enabled:'PASS'},
+            authority:{source_world_and_requests:'CALLER_AUTHORITATIVE',simulations:'DERIVED_UC_RESULTS',scenes:'DERIVED_REPLACEABLE_VISUALIZATIONS',pixels:'DERIVED_RENDER_FABRIC_OUTPUT'},
+            truth_boundary:{proves:'an explicit disabled five-family constraint request remains inert in the bounded observed scene and native frame while an explicitly enabled mount delegates through the current UC activity/isolation path and reaches distinct independently receipt-verified native pixels',does_not_prove:'direction-lock activity gating, general collision correctness, angular or 3D physics, gameplay or aesthetic quality, realtime performance or cross-machine bitwise determinism'}
+          };
+          await writeFile(base+'native-render-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('uc_constraint_activity_native_render=PASS');
+          console.log(`source_frame_sha256=${rows.source.frame_sha256}`);
+          console.log(`disabled_frame_sha256=${rows.disabled.frame_sha256}`);
+          console.log(`enabled_frame_sha256=${rows.enabled.frame_sha256}`);
+          NODE
+
+      - name: Upload retained UC constraint-activity proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-uc-constraint-activity-native-proof
+          path: creative-render/build/uc-constraint-activity-native/
+          if-no-files-found: warn
