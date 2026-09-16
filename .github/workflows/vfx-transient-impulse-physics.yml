@@ -1,0 +1,216 @@
+name: vfx-transient-impulse-physics
+
+on:
+  pull_request:
+    paths:
+      - 'src/vfx_transient_impulse_physics_bridge.mjs'
+      - 'src/vfx_transient_impulse_physics_cli.mjs'
+      - 'src/vfx_uc_live_edit_bridge.mjs'
+      - 'src/vfx_uc_physics_proxy_bridge.mjs'
+      - 'src/donor_bridge.mjs'
+      - 'src/direct_sample_bridge.mjs'
+      - 'src/creative_scene_operator.mjs'
+      - 'src/path_safety.mjs'
+      - 'tests/vfx_transient_impulse_physics_bridge.test.mjs'
+      - 'package.json'
+      - '.github/workflows/vfx-transient-impulse-physics.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/vfx_transient_impulse_physics_bridge.mjs'
+      - 'src/vfx_transient_impulse_physics_cli.mjs'
+      - 'src/vfx_uc_live_edit_bridge.mjs'
+      - 'src/vfx_uc_physics_proxy_bridge.mjs'
+      - 'src/donor_bridge.mjs'
+      - 'src/direct_sample_bridge.mjs'
+      - 'src/creative_scene_operator.mjs'
+      - 'src/path_safety.mjs'
+      - 'tests/vfx_transient_impulse_physics_bridge.test.mjs'
+      - 'package.json'
+      - '.github/workflows/vfx-transient-impulse-physics.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-vfx-transient-impulse-physics:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Universal Creation
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-universal-creation
+          ref: 87f93e1a27b2e3414f6422cd38e31b00e89d6a56
+          path: universal-creation
+
+      - name: Checkout pinned current Visual Effect Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: 2ad70dd2ba7ef48c02a17a2bef87cc4e66b1ce63
+          path: visual-effect-fabric
+
+      - name: Checkout pinned Render Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Verify current Universal Creation Physics Core capsule
+        run: node universal-creation/capabilities/physics-core/selftest.js
+
+      - name: Verify current Visual Effect Fabric transient impulse body
+        run: |
+          npm --prefix visual-effect-fabric/hand-lab test
+          npm --prefix visual-effect-fabric/hand-lab run demo:transient-impulse
+
+      - name: Build VFX transient event to UC physics proof
+        run: |
+          mkdir -p creative-render/build/vfx-transient-physics
+          node creative-render/src/vfx_transient_impulse_physics_cli.mjs build \
+            --uc-root universal-creation \
+            --vfx-root visual-effect-fabric \
+            --source-scene creative-render/build/vfx-transient-physics/source.axmscene \
+            --surface-scene creative-render/build/vfx-transient-physics/surface.axmscene \
+            --edited-scene creative-render/build/vfx-transient-physics/edited.axmscene \
+            --impulse-scene creative-render/build/vfx-transient-physics/impulse.axmscene \
+            --surface-state creative-render/build/vfx-transient-physics/surface-state.json \
+            --surface-html creative-render/build/vfx-transient-physics/surface.html \
+            --impulse-state creative-render/build/vfx-transient-physics/impulse-state.json \
+            --impulse-svg creative-render/build/vfx-transient-physics/impulse.svg \
+            --physics-trace creative-render/build/vfx-transient-physics/physics-trace.json \
+            --receipt creative-render/build/vfx-transient-physics/receipt.json
+
+      - name: Assert event mapping, source authority and physics lineage
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { parseScene } from './creative-render/src/creative_scene_operator.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-transient-physics/';
+          const [receiptBytes,editedBytes,impulseBytes,impulseStateBytes,impulseSvgBytes,traceBytes]=await Promise.all([
+            readFile(base+'receipt.json'),readFile(base+'edited.axmscene'),readFile(base+'impulse.axmscene'),
+            readFile(base+'impulse-state.json'),readFile(base+'impulse.svg'),readFile(base+'physics-trace.json')
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          if(r.contract!=='AXM_CREATIVE_VFX_TRANSIENT_UC_PHYSICS_RECEIPT'||r.version!==1)throw new Error('transient physics receipt contract drifted');
+          const v=r.visual_effect_transient_impulse,p=r.universal_creation_transient_physics;
+          if(v.donor_graph_id!=='fx.transient-impulse'||v.donor_graph_version!=='0.1.0'||v.repeat_verification!=='PASS')throw new Error('current VFX transient impulse donor not exercised cleanly');
+          if(v.event.schema!=='axm.transient-impulse-event/v0.1'||v.field.schema!=='axm.transient-impulse-field/v0.1'||v.field.derived!==true||v.field.rebuildable!==true)throw new Error('VFX canonical/derived boundary drifted');
+          if(v.truth_boundary.event_has_gameplay_or_physics_semantics!==false)throw new Error('VFX event was incorrectly promoted to physics authority');
+          if(p.physics_adapter.id!=='axm-uc-physics-fabric'||p.physics_adapter.version!=='0.1.0')throw new Error('current UC Physics Fabric surface not exercised');
+          if(p.event_to_action.output_action_kind!=='apply-impulse'||p.event_to_action.vfx_declares_physics_semantics!==false||p.event_to_action.consumer_owns_mapping!==true)throw new Error('consumer-owned event mapping boundary drifted');
+          if(p.event_to_action.derived_field_geometry_used_as_collision_or_force_data!==false)throw new Error('derived VFX geometry leaked into physics semantics');
+          if(p.repeat_verification!=='PASS'||p.source_state_mutated!==false||p.candidate_ready!==true)throw new Error('UC physics/creative repeat or agency boundary failed');
+          if(p.truth_boundary.physics_dimension!=='2D'||p.truth_boundary.triangle_mesh_collision_proven!==false||p.truth_boundary.impulse_moved_mesh_promoted_to_canonical_world_truth!==false)throw new Error('physics truth boundary drifted');
+          if(p.input_triangle_count!==p.output_triangle_count)throw new Error('impulse displacement unexpectedly changed topology count');
+          if(!(p.displacement_magnitude>0.01&&p.displacement_magnitude<2))throw new Error('impulse displacement outside bounded proof range');
+          if(p.impulse_displacement_alignment<0.999)throw new Error('physics displacement did not follow mapped impulse direction');
+          if(r.outputs.edited_scene.sha256!==sha(editedBytes)||r.outputs.impulse_scene.sha256!==sha(impulseBytes)||r.outputs.impulse_state.sha256!==sha(impulseStateBytes)||r.outputs.impulse_svg.sha256!==sha(impulseSvgBytes)||r.outputs.physics_trace.sha256!==sha(traceBytes))throw new Error('output byte lineage drifted');
+          if(r.outputs.edited_scene.sha256===r.outputs.impulse_scene.sha256)throw new Error('impulse candidate scene bytes did not change');
+          const before=parseScene(editedBytes.toString('utf8')),after=parseScene(impulseBytes.toString('utf8'));
+          if(before.triangles.length!==after.triangles.length||before.triangles.length<1||before.triangles.length>12000)throw new Error('impulse scene triangle count drifted');
+          for(let i=0;i<before.triangles.length;i++)if(JSON.stringify(before.triangles[i].albedo)!==JSON.stringify(after.triangles[i].albedo))throw new Error('impulse comparison changed albedo');
+          const trace=JSON.parse(traceBytes.toString('utf8'));
+          if(trace.physics.repeat_verification!=='PASS'||trace.physics.final_checksum!==p.final_checksum||trace.event_to_action.output_action_kind!=='apply-impulse')throw new Error('physics trace not bound to event mapping receipt');
+          console.log('vfx_transient_uc_physics_lineage=PASS');
+          console.log(`triangles=${before.triangles.length}`);
+          console.log(`vfx_event_hash=${v.canonical_event_hash}`);
+          console.log(`mapped_impulse=${p.mapped_impulse.x},${p.mapped_impulse.y}`);
+          console.log(`physics_checksum=${p.final_checksum}`);
+          console.log(`displacement=${p.displacement_xy.x},${p.displacement_xy.y}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify pre-impulse and impulse-moved candidates
+        run: |
+          base=creative-render/build/vfx-transient-physics
+          cat > "$base/edited.axmrender" <<'EOF'
+          AXM_RENDER_REQUEST 1
+          scene edited.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output edited.ppm
+          EOF
+          cat > "$base/impulse.axmrender" <<'EOF'
+          AXM_RENDER_REQUEST 1
+          scene impulse.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output impulse.ppm
+          EOF
+          for name in edited impulse; do
+            render-fabric/build/axm-render --request "$base/$name.axmrender" --receipt "$base/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$base/$name.axmrender" "$base/$name.axmreceipt"
+          done
+
+      - name: Bind mapped transient impulse to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile,writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-transient-physics/';
+          const [receiptBytes,editedFrame,impulseFrame,editedScene,impulseScene,editedRenderReceipt,impulseRenderReceipt]=await Promise.all([
+            readFile(base+'receipt.json'),readFile(base+'edited.ppm'),readFile(base+'impulse.ppm'),
+            readFile(base+'edited.axmscene'),readFile(base+'impulse.axmscene'),readFile(base+'edited.axmreceipt'),readFile(base+'impulse.axmreceipt')
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          const editedFrameSha=sha(editedFrame),impulseFrameSha=sha(impulseFrame);
+          if(editedFrameSha===impulseFrameSha)throw new Error('mapped transient impulse did not reach distinct native frame bytes');
+          const evidence={
+            contract:'AXM_CREATIVE_VFX_TRANSIENT_UC_PHYSICS_NATIVE_RENDER_EVIDENCE',version:1,
+            creative_receipt_sha256:sha(receiptBytes),
+            vfx_canonical_event_hash:r.visual_effect_transient_impulse.canonical_event_hash,
+            consumer_event_to_action:r.universal_creation_transient_physics.event_to_action,
+            physics_final_checksum:r.universal_creation_transient_physics.final_checksum,
+            physics_displacement_xy:r.universal_creation_transient_physics.displacement_xy,
+            renders:{
+              edited:{scene_sha256:sha(editedScene),frame_sha256:editedFrameSha,receipt_sha256:sha(editedRenderReceipt)},
+              impulse:{scene_sha256:sha(impulseScene),frame_sha256:impulseFrameSha,receipt_sha256:sha(impulseRenderReceipt)}
+            },
+            render_receipt_replay:{edited:'PASS',impulse:'PASS'},
+            authority:{event:'VFX_CANONICAL_EFFECT_INPUT',mapping:'CALLER_OWNED_ADAPTER',physics:'DERIVED_UC_PHYSICS_EVIDENCE',impulse_mesh:'DERIVED_CREATIVE_CANDIDATE',pixels:'DERIVED_RENDER_FABRIC_OUTPUT'},
+            truth_boundary:{
+              proves:'an explicit caller-owned mapping from a neutral current VFX transient event to a real current UC apply-impulse action produced a repeated derived displacement that reached distinct independently receipt-verified native pixels',
+              does_not_prove:'VFX-owned physics semantics, field-geometry collision or force behavior, 3D physics, gameplay correctness, live world mutation, visual quality or cross-engine determinism'
+            }
+          };
+          await writeFile(base+'native-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_transient_uc_physics_native_render=PASS');
+          console.log(`edited_frame_sha256=${editedFrameSha}`);
+          console.log(`impulse_frame_sha256=${impulseFrameSha}`);
+          NODE
+
+      - name: Upload complete transient impulse physics proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-transient-impulse-physics-proof
+          path: creative-render/build/vfx-transient-physics/
+          if-no-files-found: error
