@@ -1,0 +1,178 @@
+name: vfx-transient-field-modulation-native
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vfx-transient-field-modulation-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-vfx-transient-field-modulation-native:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: 2e7eeff8196954e830c13cae9c17b8b234e11b68
+          path: visual-effect-fabric
+
+      - name: Checkout pinned Render Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Execute current VFX composed-field impulse modulation
+        run: |
+          mkdir -p creative-render/build/vfx-transient-field-modulation
+          node creative-render/src/vfx_transient_field_modulation_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --base-scene creative-render/build/vfx-transient-field-modulation/base.axmscene \
+            --modulated-scene creative-render/build/vfx-transient-field-modulation/modulated.axmscene \
+            --state creative-render/build/vfx-transient-field-modulation/vfx-state.json \
+            --receipt creative-render/build/vfx-transient-field-modulation/modulation.receipt.json
+
+      - name: Assert event, base-field, scalar lineage and visualization boundary
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { parseScene } from './creative-render/src/creative_scene_operator.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-transient-field-modulation/';
+          const [receiptBytes,baseSceneBytes,modSceneBytes,stateBytes]=await Promise.all([
+            readFile(base+'modulation.receipt.json'),readFile(base+'base.axmscene'),readFile(base+'modulated.axmscene'),readFile(base+'vfx-state.json'),
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          if(r.contract!=='AXM_CREATIVE_VFX_TRANSIENT_FIELD_MODULATION_RECEIPT'||r.version!==1)throw new Error('modulation receipt drifted');
+          const v=r.visual_effect_fabric;
+          if(v.graph_id!=='fx.transient-impulse.composed-field-modulation'||v.graph_version!=='0.1.0'||v.donor_graph_reused!==true)throw new Error('current VFX modulation graph not exercised');
+          if(v.repeat_verification!=='PASS')throw new Error('VFX modulation repeat gate failed');
+          if(v.base_field.schema!=='axm.transient-impulse-field/v0.1'||v.modulated_field.schema!=='axm.transient-impulse-modulated-field/v0.1')throw new Error('impulse field schema drifted');
+          if(v.base_field.derived!==true||v.base_field.rebuildable!==true||v.modulated_field.derived!==true||v.modulated_field.rebuildable!==true)throw new Error('derived/rebuildable boundary drifted');
+          if(v.modulated_field.base_geometry_hash!==v.base_field.geometry_hash)throw new Error('modulated field lost base geometry lineage');
+          if(v.base_field.layout_sha256!==v.modulated_field.layout_sha256)throw new Error('modulation changed spatial primitive layout');
+          if(v.invariants.canonical_event_preserved!==true||v.invariants.base_field_preserved!==true||v.invariants.ring_baseline_preserved!==true||v.invariants.primitive_counts_preserved!==true||v.invariants.primitive_layout_preserved!==true||v.invariants.detail_intensity_changed!==true)throw new Error('VFX modulation invariants failed');
+          if(v.composition_source.schema!=='axm.scalar-field-composition-source/v0.1'||v.composition_source.operation!=='multiply')throw new Error('neutral composition source drifted');
+          if(v.modulation_source.schema!=='axm.impulse-field-modulation-source/v0.1'||v.modulation_source.mode!=='detail-intensity')throw new Error('neutral modulation source drifted');
+          if(v.modulated_field.factor_stats.samples!==v.base_field.counts.spokes+v.base_field.counts.fragments)throw new Error('modulation factor evidence drifted');
+          if(v.truth_boundary.consumer_semantics_proven!==false||v.truth_boundary.aesthetic_quality_proven!==false)throw new Error('truth boundary was promoted');
+          if(r.outputs.base_scene.sha256!==sha(baseSceneBytes)||r.outputs.modulated_scene.sha256!==sha(modSceneBytes)||r.outputs.vfx_state.sha256!==sha(stateBytes))throw new Error('output byte binding drifted');
+          if(r.comparison.same_canonical_event_hash!==true||r.comparison.same_primitive_counts!==true||r.comparison.same_primitive_layout!==true||r.comparison.same_scene_triangle_count!==true||r.comparison.scene_bytes_differ!==true)throw new Error('base/modulated comparison gate failed');
+          if(r.comparison.adapter_difference_channel!=='RGB_ALBEDO_FROM_DERIVED_INTENSITY_ONLY')throw new Error('adapter difference channel drifted');
+          const a=parseScene(baseSceneBytes.toString('utf8')),b=parseScene(modSceneBytes.toString('utf8'));
+          if(a.triangles.length!==b.triangles.length||a.triangles.length<1)throw new Error('derived scene topology drifted');
+          for(let i=0;i<a.triangles.length;i++){
+            if(JSON.stringify(a.triangles[i].vertices)!==JSON.stringify(b.triangles[i].vertices))throw new Error('visual adapter geometry changed between base and modulated fields');
+          }
+          if(JSON.stringify(a.triangles.map(x=>x.albedo))===JSON.stringify(b.triangles.map(x=>x.albedo)))throw new Error('derived intensity did not change adapter albedo');
+          console.log('vfx_transient_field_modulation_lineage=PASS');
+          console.log(`canonical_event_hash=${v.canonical_event_hash}`);
+          console.log(`base_geometry_hash=${v.base_field.geometry_hash}`);
+          console.log(`modulated_geometry_hash=${v.modulated_field.geometry_hash}`);
+          console.log(`composition_source_hash=${v.composition_source.source_hash}`);
+          console.log(`modulation_source_hash=${v.modulation_source.source_hash}`);
+          console.log(`factor_stats=${JSON.stringify(v.modulated_field.factor_stats)}`);
+          console.log(`scene_triangles=${a.triangles.length}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify base and modulated derived fields
+        run: |
+          base=creative-render/build/vfx-transient-field-modulation
+          cat > "$base/base.axmrender" <<'EOF_REQ'
+          AXM_RENDER_REQUEST 1
+          scene base.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output base.ppm
+          EOF_REQ
+          cat > "$base/modulated.axmrender" <<'EOF_REQ'
+          AXM_RENDER_REQUEST 1
+          scene modulated.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output modulated.ppm
+          EOF_REQ
+          for name in base modulated; do
+            render-fabric/build/axm-render --request "$base/$name.axmrender" --receipt "$base/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$base/$name.axmrender" "$base/$name.axmreceipt"
+          done
+
+      - name: Bind modulated derived detail to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile,writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-transient-field-modulation/';
+          const receiptBytes=await readFile(base+'modulation.receipt.json');
+          const receipt=JSON.parse(receiptBytes.toString('utf8'));
+          const rows={};
+          for(const name of ['base','modulated']){
+            const [scene,request,renderReceipt,frame]=await Promise.all([
+              readFile(base+name+'.axmscene'),readFile(base+name+'.axmrender'),readFile(base+name+'.axmreceipt'),readFile(base+name+'.ppm'),
+            ]);
+            rows[name]={scene_sha256:sha(scene),request_sha256:sha(request),receipt_sha256:sha(renderReceipt),frame_sha256:sha(frame),frame_bytes:frame.length};
+          }
+          if(rows.base.scene_sha256!==receipt.outputs.base_scene.sha256||rows.modulated.scene_sha256!==receipt.outputs.modulated_scene.sha256)throw new Error('scene identity changed before native rendering');
+          if(rows.base.frame_sha256===rows.modulated.frame_sha256)throw new Error('field modulation did not change native frame bytes');
+          const evidence={
+            contract:'AXM_CREATIVE_VFX_TRANSIENT_FIELD_MODULATION_NATIVE_EVIDENCE',version:1,
+            modulation_receipt_sha256:sha(receiptBytes),
+            canonical_event_hash:receipt.visual_effect_fabric.canonical_event_hash,
+            base_geometry_hash:receipt.visual_effect_fabric.base_field.geometry_hash,
+            modulated_geometry_hash:receipt.visual_effect_fabric.modulated_field.geometry_hash,
+            shared_layout_sha256:receipt.visual_effect_fabric.base_field.layout_sha256,
+            composition_source_hash:receipt.visual_effect_fabric.composition_source.source_hash,
+            modulation_source_hash:receipt.visual_effect_fabric.modulation_source.source_hash,
+            factor_stats:receipt.visual_effect_fabric.modulated_field.factor_stats,
+            renders:rows,
+            render_receipt_replay:{base:'PASS',modulated:'PASS'},
+            authority:{canonical_event:'CANONICAL_VFX_TRANSIENT_EVENT',scalar_sources:'CANONICAL_VFX_SCALAR_FIELD_SOURCES',composition_source:'CANONICAL_NEUTRAL_VFX_COMPOSITION_SOURCE',modulation_source:'CANONICAL_NEUTRAL_VFX_MODULATION_SOURCE',base_field:'DERIVED_REBUILDABLE_VFX_BODY',modulated_field:'DERIVED_REBUILDABLE_VFX_BODY',scenes:'DERIVED_REPLACEABLE_VISUAL_ADAPTER_BODIES',pixels:'DERIVED_RENDER_FABRIC_OUTPUT'},
+            truth_boundary:{proves:'the real current VFX composed-field modulation changes only derived transient detail intensity over a preserved event/base layout, and one explicit intensity-to-albedo adapter makes that difference observable through independently receipt-verified native pixels',does_not_prove:'aesthetic quality, consumer/gameplay/physics meaning, physical force semantics, browser/GPU parity, realtime performance or cross-machine bitwise determinism'}
+          };
+          await writeFile(base+'native-modulation-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_transient_field_modulation_native=PASS');
+          console.log(`base_frame_sha256=${rows.base.frame_sha256}`);
+          console.log(`modulated_frame_sha256=${rows.modulated.frame_sha256}`);
+          NODE
+
+      - name: Upload complete transient field modulation native proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-transient-field-modulation-native-proof
+          path: creative-render/build/vfx-transient-field-modulation/
