@@ -1,0 +1,197 @@
+name: vfx-uc-physics-proxy
+
+on:
+  pull_request:
+    paths:
+      - 'src/vfx_uc_physics_proxy_bridge.mjs'
+      - 'src/vfx_uc_physics_proxy_cli.mjs'
+      - 'src/vfx_uc_live_edit_bridge.mjs'
+      - 'src/donor_bridge.mjs'
+      - 'src/direct_sample_bridge.mjs'
+      - 'src/creative_scene_operator.mjs'
+      - 'src/path_safety.mjs'
+      - 'tests/vfx_uc_physics_proxy_bridge.test.mjs'
+      - 'package.json'
+      - '.github/workflows/vfx-uc-physics-proxy.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/vfx_uc_physics_proxy_bridge.mjs'
+      - 'src/vfx_uc_physics_proxy_cli.mjs'
+      - 'src/vfx_uc_live_edit_bridge.mjs'
+      - 'src/donor_bridge.mjs'
+      - 'src/direct_sample_bridge.mjs'
+      - 'src/creative_scene_operator.mjs'
+      - 'src/path_safety.mjs'
+      - 'tests/vfx_uc_physics_proxy_bridge.test.mjs'
+      - 'package.json'
+      - '.github/workflows/vfx-uc-physics-proxy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-vfx-uc-physics-proxy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Universal Creation
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-universal-creation
+          ref: 49ef11ca42b2079dffbd595daa8ea8626b99d2ab
+          path: universal-creation
+
+      - name: Checkout pinned current Visual Effect Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: f26cb987d31df8a153675f805b6b8579a9f21f96
+          path: visual-effect-fabric
+
+      - name: Checkout pinned Render Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Verify imported Universal Creation Physics Core capsule
+        run: node universal-creation/capabilities/physics-core/selftest.js
+
+      - name: Build real VFX to UC edit to 2D physics-proxy chain
+        run: |
+          mkdir -p creative-render/build/vfx-uc-physics
+          node creative-render/src/vfx_uc_physics_proxy_cli.mjs build \
+            --uc-root universal-creation \
+            --vfx-root visual-effect-fabric \
+            --source-scene creative-render/build/vfx-uc-physics/source.axmscene \
+            --surface-scene creative-render/build/vfx-uc-physics/surface.axmscene \
+            --edited-scene creative-render/build/vfx-uc-physics/edited.axmscene \
+            --physics-scene creative-render/build/vfx-uc-physics/physics.axmscene \
+            --vfx-state creative-render/build/vfx-uc-physics/vfx-state.json \
+            --vfx-html creative-render/build/vfx-uc-physics/vfx-refined.html \
+            --physics-trace creative-render/build/vfx-uc-physics/physics-trace.json \
+            --receipt creative-render/build/vfx-uc-physics/physics.receipt.json
+
+      - name: Assert physics proxy lineage and truth boundary
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { parseScene } from './creative-render/src/creative_scene_operator.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-uc-physics/';
+          const [receiptBytes,editedBytes,physicsBytes,traceBytes]=await Promise.all([
+            readFile(base+'physics.receipt.json'),readFile(base+'edited.axmscene'),readFile(base+'physics.axmscene'),readFile(base+'physics-trace.json')
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          if(r.contract!=='AXM_CREATIVE_VFX_UC_PHYSICS_PROXY_RECEIPT'||r.version!==1)throw new Error('physics receipt contract drifted');
+          const p=r.universal_creation_physics_proxy;
+          if(p.physics_adapter.id!=='axm-uc-physics-fabric'||p.physics_adapter.version!=='0.1.0'||p.physics_adapter.core_version!=='0.3.1')throw new Error('current UC physics surface not exercised');
+          if(p.repeat_verification!=='PASS'||p.source_state_mutated!==false||p.candidate_ready!==true)throw new Error('physics/creative repeat or source-state boundary failed');
+          if(p.proxy_adapter.mesh_collision_preserved!==false||p.proxy_adapter.z_axis_represented!==false)throw new Error('physics proxy loss boundary drifted');
+          if(p.truth_boundary.physics_dimension!=='2D'||p.truth_boundary.triangle_mesh_collision_proven!==false||p.truth_boundary.physics_moved_mesh_promoted_to_canonical_world_truth!==false)throw new Error('physics truth boundary drifted');
+          if(p.input_triangle_count!==p.output_triangle_count)throw new Error('physics displacement unexpectedly changed topology count');
+          if(!(p.displacement_xy.y>0.05&&p.displacement_xy.y<1.05))throw new Error('physics displacement outside expected bounded proof range');
+          if(r.outputs.edited_scene.sha256!==sha(editedBytes)||r.outputs.physics_scene.sha256!==sha(physicsBytes)||r.outputs.physics_trace.sha256!==sha(traceBytes))throw new Error('physics output byte lineage drifted');
+          if(r.outputs.edited_scene.sha256===r.outputs.physics_scene.sha256)throw new Error('physics candidate scene bytes did not change');
+          const before=parseScene(editedBytes.toString('utf8')),after=parseScene(physicsBytes.toString('utf8'));
+          if(before.triangles.length!==after.triangles.length||before.triangles.length<1||before.triangles.length>12000)throw new Error('physics scene triangle count drifted');
+          for(let i=0;i<before.triangles.length;i++)if(JSON.stringify(before.triangles[i].albedo)!==JSON.stringify(after.triangles[i].albedo))throw new Error('physics comparison changed albedo');
+          const trace=JSON.parse(traceBytes.toString('utf8'));
+          if(trace.physics.repeat_verification!=='PASS'||trace.physics.final_checksum!==p.final_checksum)throw new Error('physics trace not bound to receipt');
+          console.log('vfx_uc_physics_lineage=PASS');
+          console.log(`triangles=${before.triangles.length}`);
+          console.log(`physics_checksum=${p.final_checksum}`);
+          console.log(`physics_displacement_y=${p.displacement_xy.y}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify pre-physics and physics-moved candidates
+        run: |
+          base=creative-render/build/vfx-uc-physics
+          cat > "$base/edited.axmrender" <<'EOF'
+          AXM_RENDER_REQUEST 1
+          scene edited.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output edited.ppm
+          EOF
+          cat > "$base/physics.axmrender" <<'EOF'
+          AXM_RENDER_REQUEST 1
+          scene physics.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output physics.ppm
+          EOF
+          for name in edited physics; do
+            render-fabric/build/axm-render --request "$base/$name.axmrender" --receipt "$base/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$base/$name.axmrender" "$base/$name.axmreceipt"
+          done
+
+      - name: Bind physics displacement to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile,writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-uc-physics/';
+          const [receiptBytes,editedFrame,physicsFrame,editedScene,physicsScene,editedRenderReceipt,physicsRenderReceipt]=await Promise.all([
+            readFile(base+'physics.receipt.json'),readFile(base+'edited.ppm'),readFile(base+'physics.ppm'),
+            readFile(base+'edited.axmscene'),readFile(base+'physics.axmscene'),readFile(base+'edited.axmreceipt'),readFile(base+'physics.axmreceipt')
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          const editedFrameSha=sha(editedFrame),physicsFrameSha=sha(physicsFrame);
+          if(editedFrameSha===physicsFrameSha)throw new Error('2D physics proxy displacement did not reach distinct native frame bytes');
+          const evidence={
+            contract:'AXM_CREATIVE_VFX_UC_PHYSICS_NATIVE_RENDER_EVIDENCE',version:1,
+            creative_receipt_sha256:sha(receiptBytes),
+            physics_final_checksum:r.universal_creation_physics_proxy.final_checksum,
+            physics_displacement_xy:r.universal_creation_physics_proxy.displacement_xy,
+            renders:{
+              edited:{scene_sha256:sha(editedScene),frame_sha256:editedFrameSha,receipt_sha256:sha(editedRenderReceipt)},
+              physics:{scene_sha256:sha(physicsScene),frame_sha256:physicsFrameSha,receipt_sha256:sha(physicsRenderReceipt)}
+            },
+            render_receipt_replay:{edited:'PASS',physics:'PASS'},
+            authority:{edited:'DERIVED_UC_CREATIVE_CANDIDATE',physics:'DERIVED_2D_PHYSICS_PROXY_CANDIDATE',pixels:'DERIVED_RENDER_FABRIC_OUTPUT'},
+            truth_boundary:{
+              proves:'a real UC 2D physics-proxy displacement derived from VFX/UC geometry reached distinct independently receipt-verified native pixels',
+              does_not_prove:'triangle collision, 3D physics, semantic physical correctness, live world mutation, visual quality or cross-engine determinism'
+            }
+          };
+          await writeFile(base+'physics-native-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_uc_physics_native_render=PASS');
+          console.log(`edited_frame_sha256=${editedFrameSha}`);
+          console.log(`physics_frame_sha256=${physicsFrameSha}`);
+          NODE
+
+      - name: Upload complete VFX to UC physics proxy proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-uc-physics-proxy-proof
+          path: creative-render/build/vfx-uc-physics/
+          if-no-files-found: error
