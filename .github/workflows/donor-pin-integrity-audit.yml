@@ -36,11 +36,13 @@ jobs:
           cat > build/donor-pin-audit/attempt.json <<EOF
           {
             "contract": "AXM_CREATIVE_DONOR_PIN_AUDIT_ATTEMPT",
-            "version": 1,
+            "version": 2,
             "creative_render_head": "${GITHUB_SHA}",
             "scope": ".github/workflows/*.yml|*.yaml",
             "policy": {
               "external_checkout_ref_must_be_exact_40_hex_commit": true,
+              "github_hosted_raw_or_contents_ref_must_be_exact_40_hex_commit": true,
+              "unbound_github_clone_fails_closed": true,
               "historical_exact_pins_are_allowed": true,
               "current_donor_head_drift_is_evidence_not_failure": true,
               "remote_commit_resolution_is_required": true
@@ -48,7 +50,7 @@ jobs:
           }
           EOF
 
-      - name: Audit immutable donor pins and resolve exact donor commits
+      - name: Audit immutable donor pins and GitHub network refs
         id: audit
         continue-on-error: true
         env:
@@ -76,15 +78,19 @@ jobs:
           const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
           const bytes = await readFile('build/donor-pin-audit/audit.json');
           const report = JSON.parse(bytes.toString('utf8'));
-          if (report.contract !== 'AXM_CREATIVE_DONOR_PIN_AUDIT' || report.version !== 1) throw new Error('audit contract drifted');
-          if (report.boundary?.exact_commit_pins_are_required !== true) throw new Error('exact pin boundary missing');
+          if (report.contract !== 'AXM_CREATIVE_DONOR_PIN_AUDIT' || report.version !== 2) throw new Error('audit contract drifted');
+          if (report.boundary?.exact_commit_pins_are_required !== true) throw new Error('exact checkout pin boundary missing');
+          if (report.boundary?.github_hosted_network_refs_must_be_exact_commit_addressed !== true) throw new Error('network pin boundary missing');
+          if (report.boundary?.unbound_github_clone_fails_closed !== true) throw new Error('unbound clone boundary missing');
           if (report.boundary?.current_head_drift_is_evidence_not_failure !== true) throw new Error('head-drift truth boundary missing');
           if (report.boundary?.donor_source_remains_authoritative !== true) throw new Error('donor authority boundary missing');
           if (report.boundary?.audit_output_is_derived_replaceable_evidence !== true) throw new Error('derived audit boundary missing');
           if (!(report.summary?.external_checkout_count > 0)) throw new Error('audit discovered no donor checkouts');
           if (report.summary.mutable_or_missing_ref_count !== 0) throw new Error('mutable or missing donor checkout ref found');
+          if (report.summary.mutable_or_unbound_github_network_ref_count !== 0) throw new Error('mutable or unbound GitHub network donor ref found');
           if (report.summary.resolution_failure_count !== 0) throw new Error('one or more exact donor commits no longer resolve');
           if (report.summary.immutable_checkout_count !== report.summary.external_checkout_count) throw new Error('not every donor checkout is immutable');
+          if (report.summary.immutable_github_network_ref_count !== report.summary.github_network_ref_count) throw new Error('not every GitHub network donor ref is immutable');
           if (!(report.summary.unique_resolved_pin_count > 0)) throw new Error('no exact donor pin was resolved remotely');
           if (report.summary.ok !== true) throw new Error('donor pin audit did not pass');
           for (const row of report.remote.pins) {
@@ -92,14 +98,17 @@ jobs:
           }
           const evidence = {
             contract: 'AXM_CREATIVE_DONOR_PIN_AUDIT_INDEPENDENT_EVIDENCE',
-            version: 1,
+            version: 2,
             audit_sha256: sha(bytes),
             workflow_count: report.summary.workflow_count,
             external_checkout_count: report.summary.external_checkout_count,
+            github_network_ref_count: report.summary.github_network_ref_count,
             unique_resolved_pin_count: report.summary.unique_resolved_pin_count,
             historical_pin_count: report.summary.historical_pin_count,
             gates: {
-              immutable_external_refs: 'PASS',
+              immutable_external_checkout_refs: 'PASS',
+              immutable_github_network_refs: 'PASS',
+              unbound_github_clone_rejection: 'PASS',
               exact_remote_commit_resolution: 'PASS',
               stale_head_not_promoted_to_failure: 'PASS',
               donor_authority_retained: 'PASS',
@@ -109,6 +118,7 @@ jobs:
           await writeFile('build/donor-pin-audit/independent-evidence.json', `${JSON.stringify(evidence, null, 2)}\n`);
           console.log('donor_pin_independent_evidence=PASS');
           console.log(`external_checkout_count=${report.summary.external_checkout_count}`);
+          console.log(`github_network_ref_count=${report.summary.github_network_ref_count}`);
           console.log(`unique_resolved_pin_count=${report.summary.unique_resolved_pin_count}`);
           console.log(`historical_pin_count=${report.summary.historical_pin_count}`);
           NODE
