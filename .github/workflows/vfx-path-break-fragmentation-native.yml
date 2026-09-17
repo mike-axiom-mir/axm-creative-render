@@ -1,0 +1,214 @@
+name: vfx-path-break-fragmentation-native
+
+on:
+  pull_request:
+    paths:
+      - 'src/vfx_path_break_fragmentation_bridge.mjs'
+      - 'src/vfx_path_break_fragmentation_cli.mjs'
+      - 'tests/vfx_path_break_fragmentation_bridge.test.mjs'
+      - '.github/workflows/vfx-path-break-fragmentation-native.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/vfx_path_break_fragmentation_bridge.mjs'
+      - 'src/vfx_path_break_fragmentation_cli.mjs'
+      - 'tests/vfx_path_break_fragmentation_bridge.test.mjs'
+      - '.github/workflows/vfx-path-break-fragmentation-native.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-current-vfx-path-break-fragmentation-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: 3481d262c292cd5ce9fa53faa6d1e3c6fb380e82
+          path: visual-effect-fabric
+
+      - name: Checkout pinned Render Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Prepare retained attempt evidence before assertions
+        run: |
+          mkdir -p creative-render/build/vfx-path-break-fragmentation-native
+          cat > creative-render/build/vfx-path-break-fragmentation-native/attempt.json <<EOF
+          {
+            "contract": "AXM_CREATIVE_VFX_PATH_BREAK_FRAGMENTATION_NATIVE_ATTEMPT",
+            "version": 1,
+            "creative_render_head": "${GITHUB_SHA}",
+            "visual_effect_fabric": "3481d262c292cd5ce9fa53faa6d1e3c6fb380e82",
+            "render_fabric": "6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b",
+            "graph": "fx.path.break-fragment2d",
+            "authority": "caller path topology and normalized VFX path-break source remain authoritative; broken path sets, AXM_SCENE bodies, receipts and pixels are derived/replaceable"
+          }
+          EOF
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run pinned current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Build zero and fragmented path proof
+        run: |
+          base=creative-render/build/vfx-path-break-fragmentation-native
+          node creative-render/src/vfx_path_break_fragmentation_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --vfx-revision 3481d262c292cd5ce9fa53faa6d1e3c6fb380e82 \
+            --source-paths "$base/source-paths.json" \
+            --zero-scene "$base/zero.axmscene" \
+            --fragmented-scene "$base/fragmented.axmscene" \
+            --zero-state "$base/zero-state.json" \
+            --fragmented-state "$base/fragmented-state.json" \
+            --receipt "$base/path-break.receipt.json"
+
+      - name: Independently assert authority, topology, bounds and tamper rejection
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { parseScene } from './creative-render/src/creative_scene_operator.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-path-break-fragmentation-native/';
+          const [receiptBytes,sourcePathsBytes,zeroSceneBytes,fragmentedSceneBytes,zeroStateBytes,fragmentedStateBytes,attemptBytes]=await Promise.all([
+            readFile(base+'path-break.receipt.json'),readFile(base+'source-paths.json'),readFile(base+'zero.axmscene'),readFile(base+'fragmented.axmscene'),
+            readFile(base+'zero-state.json'),readFile(base+'fragmented-state.json'),readFile(base+'attempt.json')
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          const attempt=JSON.parse(attemptBytes.toString('utf8'));
+          if(attempt.visual_effect_fabric!=='3481d262c292cd5ce9fa53faa6d1e3c6fb380e82'||attempt.render_fabric!=='6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b')throw new Error('pinned donor attempt evidence drifted');
+          if(r.contract!=='AXM_CREATIVE_VFX_PATH_BREAK_FRAGMENTATION_RECEIPT'||r.version!==1)throw new Error('path-break receipt contract drifted');
+          if(r.donor.revision!==attempt.visual_effect_fabric||r.donor.graph_id!=='fx.path.break-fragment2d'||r.donor.graph_version!=='0.1.0')throw new Error('current VFX path-break graph was not exercised');
+          if(JSON.stringify(r.donor.hand_ids)!==JSON.stringify(['fx.path.break-fragment-source-normalize','fx.path.break-fragment-build']))throw new Error('VFX path-break Hand boundary drifted');
+          if(r.caller_authority.source_paths_mutated!==false||r.caller_authority.canonical_topology_replaced!==false||r.caller_authority.consumer_meaning_assigned!==false)throw new Error('caller path authority boundary failed');
+          if(r.outputs.source_paths.sha256!==sha(sourcePathsBytes)||r.outputs.zero_state.sha256!==sha(zeroStateBytes)||r.outputs.active_state.sha256!==sha(fragmentedStateBytes))throw new Error('source/state byte binding drifted');
+          if(r.outputs.zero_scene.sha256!==sha(zeroSceneBytes)||r.outputs.active_scene.sha256!==sha(fragmentedSceneBytes))throw new Error('scene byte binding drifted');
+          if(r.zero_break.caller_neutral_repeat_verification!=='PASS'||r.active_break.caller_neutral_repeat_verification!=='PASS')throw new Error('caller-neutral repeat verification failed');
+          if(r.zero_break.break_count!==0||r.zero_break.gap_width!==0||r.zero_break.exact_derived_noop_verified!==true)throw new Error('zero break did not remain exact derived no-op');
+          if(r.zero_break.path_set.source_path_count!==2||r.zero_break.path_set.source_point_count!==10||r.zero_break.path_set.fragment_count!==2||r.zero_break.path_set.point_count!==10||r.zero_break.path_set.removed_normalized_length_per_path!==0)throw new Error('zero-break source cardinality drifted');
+          if(r.active_break.break_count!==2||r.active_break.gap_width!==0.08||r.active_break.phase!==0.5)throw new Error('explicit active break treatment drifted');
+          if(r.active_break.path_set.fragment_count!==6||r.active_break.positive_gap_count_verified!==4||r.active_break.path_set.removed_normalized_length_per_path!==0.16)throw new Error('active path fragmentation evidence drifted');
+          if(r.active_break.source_path_metadata_copied_to_fragments!==true)throw new Error('source path metadata preservation evidence failed');
+          if(r.zero_break.path_set_hash===r.active_break.path_set_hash||r.zero_break.break_source_hash===r.active_break.break_source_hash)throw new Error('explicit break challenge did not change derived/source identities');
+          if(JSON.stringify(r.execution_bounds.exact)!==JSON.stringify({maxSourcePoints:10,maxFragments:6,maxDerivedPoints:18}))throw new Error('exact path-break bound evidence drifted');
+          if(r.execution_bounds.sufficient_budget_identity_preserved!==true)throw new Error('sufficient path-break budgets became hidden creative parameters');
+          if(!/source point budget exceeded: 10 > 9/.test(r.execution_bounds.insufficient_source_error))throw new Error('source-point budget did not fail closed');
+          if(!/fragment budget exceeded: 6 > 5/.test(r.execution_bounds.insufficient_fragment_error))throw new Error('fragment budget did not fail closed');
+          if(!/derived point budget exceeded: 18 > 17/.test(r.execution_bounds.insufficient_derived_point_error))throw new Error('derived-point budget did not fail closed');
+          if(r.execution_bounds.failed_budget_mutated_retained_source!==false)throw new Error('failed budget challenge mutated retained source');
+          if(r.semantic_tamper_challenge.changed_field!=='pathBreakSource.algorithm'||r.semantic_tamper_challenge.recomputed_source_hash!==true||r.semantic_tamper_challenge.rejected!==true||!/algorithm mismatch/.test(r.semantic_tamper_challenge.error)||r.semantic_tamper_challenge.failed_challenge_mutated_retained_source!==false)throw new Error('self-consistent semantic-source tamper was not rejected');
+          for(const row of [r.zero_break,r.active_break]){
+            if(row.path_set.schema!=='axm.broken-path-set/v0.1'||row.path_set.derived!==true||row.path_set.rebuildable!==true)throw new Error('derived broken-path truth boundary drifted');
+            if(row.scene_adapter.geometry_encodes_derived_fragment_topology!==true||row.scene_adapter.albedo_is_constant_observation_style!==true||row.scene_adapter.consumer_semantics_preserved!==false)throw new Error('replaceable scene-adapter boundary drifted');
+          }
+          if(sha(zeroSceneBytes)===sha(fragmentedSceneBytes))throw new Error('active path fragmentation produced identical derived scene bytes');
+          const zeroScene=parseScene(zeroSceneBytes.toString('utf8')),fragmentedScene=parseScene(fragmentedSceneBytes.toString('utf8'));
+          if(zeroScene.triangles.length!==r.zero_break.scene_adapter.output_triangle_count||fragmentedScene.triangles.length!==r.active_break.scene_adapter.output_triangle_count)throw new Error('scene triangle binding drifted');
+          if(zeroScene.triangles.length!==16)throw new Error('zero-break observer should contain the original 8 segments / 16 triangles');
+          for(const scene of [zeroScene,fragmentedScene])if(scene.triangles.some(t=>JSON.stringify(t.albedo)!==JSON.stringify([232,170,74])))throw new Error('path-break observation style is not constant');
+          if(JSON.stringify(zeroScene.triangles.map(t=>t.vertices))===JSON.stringify(fragmentedScene.triangles.map(t=>t.vertices)))throw new Error('active path fragmentation did not reach scene geometry');
+          const evidence={
+            contract:'AXM_CREATIVE_VFX_PATH_BREAK_FRAGMENTATION_INDEPENDENT_EVIDENCE',version:1,
+            creative_receipt_sha256:sha(receiptBytes),attempt_sha256:sha(attemptBytes),
+            donor_revisions:{visual_effect_fabric:attempt.visual_effect_fabric,render_fabric:attempt.render_fabric},
+            gates:{caller_path_authority:'PASS',zero_break_exact_noop:'PASS',normalized_arc_gap_fragmentation:'PASS',fragment_source_lineage:'PASS',source_path_metadata_copy:'PASS',sufficient_budgets_noncreative:'PASS',three_insufficient_bounds_fail_closed:'PASS',self_consistent_semantic_tamper_rejected:'PASS',constant_style_topology_observer:'PASS',same_runtime_caller_neutral_repeat:'PASS'}
+          };
+          await writeFile(base+'independent-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_path_break_fragmentation_independent_evidence=PASS');
+          console.log(`source_path_hash=${r.caller_authority.source_path_hash}`);
+          console.log(`zero_path_set_hash=${r.zero_break.path_set_hash}`);
+          console.log(`fragmented_path_set_hash=${r.active_break.path_set_hash}`);
+          console.log(`fragment_count=${r.active_break.path_set.fragment_count}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify both path-break candidates
+        run: |
+          base=creative-render/build/vfx-path-break-fragmentation-native
+          for name in zero fragmented; do
+            cat > "$base/$name.axmrender" <<EOF
+          AXM_RENDER_REQUEST 1
+          scene $name.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output $name.ppm
+          EOF
+            render-fabric/build/axm-render --request "$base/$name.axmrender" --receipt "$base/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$base/$name.axmrender" "$base/$name.axmreceipt"
+          done
+
+      - name: Bind broken-path topology to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile,writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-path-break-fragmentation-native/';
+          const receiptBytes=await readFile(base+'path-break.receipt.json');
+          const receipt=JSON.parse(receiptBytes.toString('utf8'));
+          const renders={};
+          for(const name of ['zero','fragmented']){
+            const [scene,request,renderReceipt,frame]=await Promise.all([
+              readFile(base+name+'.axmscene'),readFile(base+name+'.axmrender'),readFile(base+name+'.axmreceipt'),readFile(base+name+'.ppm')
+            ]);
+            renders[name]={scene_sha256:sha(scene),request_sha256:sha(request),receipt_sha256:sha(renderReceipt),frame_sha256:sha(frame),frame_bytes:frame.length};
+          }
+          if(renders.zero.scene_sha256!==receipt.outputs.zero_scene.sha256||renders.fragmented.scene_sha256!==receipt.outputs.active_scene.sha256)throw new Error('scene identity changed before native rendering');
+          if(renders.zero.frame_sha256===renders.fragmented.frame_sha256)throw new Error('active path-break topology did not reach distinct native frame bytes');
+          const evidence={
+            contract:'AXM_CREATIVE_VFX_PATH_BREAK_FRAGMENTATION_NATIVE_EVIDENCE',version:1,
+            creative_receipt_sha256:sha(receiptBytes),
+            donor_revisions:{visual_effect_fabric:'3481d262c292cd5ce9fa53faa6d1e3c6fb380e82',render_fabric:'6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b'},
+            source_path_hash:receipt.caller_authority.source_path_hash,
+            zero_break_source_hash:receipt.zero_break.break_source_hash,
+            active_break_source_hash:receipt.active_break.break_source_hash,
+            zero_path_set_hash:receipt.zero_break.path_set_hash,
+            active_path_set_hash:receipt.active_break.path_set_hash,
+            active_fragment_count:receipt.active_break.path_set.fragment_count,
+            renders,render_receipt_replay:{zero:'PASS',fragmented:'PASS'},
+            authority:{caller_paths:'CALLER_CANONICAL_PATH_SOURCE',vfx_break_source:'RETAINED_VFX_PATH_BREAK_SOURCE',broken_path_sets:'DERIVED_REBUILDABLE_VFX_WORKING_SETS',scenes:'DERIVED_REPLACEABLE_VISUALIZATIONS',pixels:'DERIVED_RENDER_FABRIC_OUTPUT'},
+            truth_boundary:{
+              proves:'the pinned current VFX renderer-neutral path-break graph preserves caller-owned canonical path state across an explicit zero-to-active break choice, derives separate visible fragments from normalized arc-length gaps, keeps adequate resource ceilings non-creative, rejects insufficient resource bounds and self-consistent semantic-source forgery, and carries the legitimate derived topology change through one constant-style observer into independently receipt-verified native pixels',
+              does_not_prove:'crack/wound/river/UI-dash/trail/destruction/game/product/world/material semantics, physical fracture correctness, animation behavior, visual quality, target-device performance, GPU/browser parity or cross-machine bitwise determinism'
+            }
+          };
+          await writeFile(base+'native-render-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_path_break_fragmentation_native_render=PASS');
+          console.log(`zero_frame_sha256=${renders.zero.frame_sha256}`);
+          console.log(`fragmented_frame_sha256=${renders.fragmented.frame_sha256}`);
+          NODE
+
+      - name: Upload retained VFX path-break fragmentation native proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-path-break-fragmentation-native-proof
+          path: creative-render/build/vfx-path-break-fragmentation-native/
+          if-no-files-found: warn
