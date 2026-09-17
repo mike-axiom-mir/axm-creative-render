@@ -9,6 +9,8 @@ const VERSION = 1;
 const DEFAULT_SUBDIVISIONS = 8;
 const HALF_WIDTH = 0.0045;
 const FIXED_ALBEDO = [151, 211, 111];
+const round6 = (value) => Number(Number(value).toFixed(6));
+const round9 = (value) => Number(Number(value).toFixed(9));
 
 function exactRevision(value, label) {
   const text = String(value || "").trim();
@@ -22,11 +24,8 @@ function stableBytes(value) {
 
 async function fileDigest(path) {
   const bytes = await readFile(path);
-  return { bytes, sha256: sha256(bytes) };
+  return { sha256: sha256(bytes) };
 }
-
-const round6 = (value) => Number(Number(value).toFixed(6));
-const round9 = (value) => Number(Number(value).toFixed(9));
 
 function normalizedPoint(point, label) {
   if (!Array.isArray(point) || point.length !== 2) throw new Error(`${label} must be a 2D point`);
@@ -43,10 +42,10 @@ function scenePoint(point) {
 }
 
 function quadraticPoint(start, control, end, t) {
-  const oneMinus = 1 - t;
+  const u = 1 - t;
   return [
-    round9(oneMinus * oneMinus * start[0] + 2 * oneMinus * t * control[0] + t * t * end[0]),
-    round9(oneMinus * oneMinus * start[1] + 2 * oneMinus * t * control[1] + t * t * end[1]),
+    round9(u * u * start[0] + 2 * u * t * control[0] + t * t * end[0]),
+    round9(u * u * start[1] + 2 * u * t * control[1] + t * t * end[1]),
   ];
 }
 
@@ -85,9 +84,8 @@ export function flowGuidedBranchCurveSetToAxmScene(curveSet, options = {}) {
     throw new Error("flow-guided branch scene adapter subdivisions must be an integer within [2,32]");
   }
 
-  const ordered = [...curveSet.curves].sort((a, b) => a.index - b.index);
   const triangles = [];
-  ordered.forEach((curve, index) => {
+  [...curveSet.curves].sort((a, b) => a.index - b.index).forEach((curve, index) => {
     if (!curve || curve.index !== index || typeof curve.segmentId !== "string" || !curve.segmentId) {
       throw new Error(`flow-guided branch adapter curve order/identity mismatch at index ${index}`);
     }
@@ -104,10 +102,8 @@ export function flowGuidedBranchCurveSetToAxmScene(curveSet, options = {}) {
 
   const scene = { version: 1, triangles };
   const bytes = Buffer.from(serializeScene(scene), "utf8");
-  const reparsed = parseScene(bytes.toString("utf8"));
   const expectedTriangles = curveSet.curveCount * subdivisions * 2;
-  if (reparsed.triangles.length !== expectedTriangles) throw new Error("flow-guided branch scene adapter triangle count drifted");
-
+  if (parseScene(bytes.toString("utf8")).triangles.length !== expectedTriangles) throw new Error("flow-guided branch scene adapter triangle count drifted");
   return {
     scene,
     bytes,
@@ -152,15 +148,10 @@ export async function observeVisualEffectBranchFlowGuidedNative(root, options = 
   const runtime = await import(`${pathToFileURL(paths.runtime).href}?sha=${sources.runtime.sha256}`);
   const guided = await import(`${pathToFileURL(paths.guided).href}?sha=${sources.guided.sha256}`);
 
-  if (typeof runtime.createHandRegistry !== "function" || typeof runtime.executeHandGraph !== "function" || typeof runtime.hashValue !== "function") {
-    throw new Error("VFX donor Hand runtime is unavailable");
-  }
-  if (!Array.isArray(guided.BRANCH_FLOW_GUIDED_CURVE_HANDS) || !guided.BRANCH_FLOW_GUIDED_CURVE_GRAPH || typeof guided.makeBranchFlowGuidedCurveState !== "function") {
-    throw new Error("VFX donor flow-guided branch graph is unavailable");
-  }
-  if (guided.BRANCH_FLOW_GUIDED_CURVE_GRAPH.id !== "fx.growth.branching2d-flow-guided-static-svg" || guided.BRANCH_FLOW_GUIDED_CURVE_GRAPH.version !== "0.1.0") {
-    throw new Error("unexpected VFX flow-guided branch graph identity");
-  }
+  if (typeof runtime.createHandRegistry !== "function" || typeof runtime.executeHandGraph !== "function" || typeof runtime.hashValue !== "function") throw new Error("VFX donor Hand runtime is unavailable");
+  if (!Array.isArray(guided.BRANCH_FLOW_GUIDED_CURVE_HANDS) || !guided.BRANCH_FLOW_GUIDED_CURVE_GRAPH || typeof guided.makeBranchFlowGuidedCurveState !== "function") throw new Error("VFX donor flow-guided branch graph is unavailable");
+  if (guided.BRANCH_FLOW_GUIDED_CURVE_GRAPH.id !== "fx.growth.branching2d-flow-guided-static-svg" || guided.BRANCH_FLOW_GUIDED_CURVE_GRAPH.version !== "0.1.0") throw new Error("unexpected VFX flow-guided branch graph identity");
+
   const expectedHands = [
     "fx.growth.branching2d-source-normalize",
     "fx.growth.branching2d-network-build",
@@ -169,161 +160,106 @@ export async function observeVisualEffectBranchFlowGuidedNative(root, options = 
     "fx.growth.branching2d-flow-guided-curves-build",
     "fx.growth.branching2d-flow-guided-static-svg-realize",
   ];
-  if (JSON.stringify(guided.BRANCH_FLOW_GUIDED_CURVE_HANDS.map((hand) => hand.id)) !== JSON.stringify(expectedHands)) {
-    throw new Error("unexpected VFX flow-guided branch Hand boundary");
-  }
+  if (JSON.stringify(guided.BRANCH_FLOW_GUIDED_CURVE_HANDS.map((hand) => hand.id)) !== JSON.stringify(expectedHands)) throw new Error("unexpected VFX flow-guided branch Hand boundary");
 
-  const shared = {
-    growth: {
-      id: "creative-render-flow-guided-growth",
-      origin: [0.5, 0.92],
-      headingTurns: 0.75,
-      baseLength: 0.18,
-      lengthDecay: 0.66,
-      branchOffsetsTurns: [-0.075, 0.075],
-      generations: 5,
-    },
-    flow: {
-      id: "creative-render-flow-guidance",
-      mode: "gradient",
-      strength: 2.4,
-      sampleStep: 0.02,
-      field: {
-        id: "creative-render-flow-field",
-        seed: 4242,
-        frequency: 3.5,
-        octaves: 4,
-        lacunarity: 2,
-        gain: 0.5,
-        offset: [0.1, -0.2],
-      },
-    },
+  const growth = {
+    id: "creative-render-flow-guided-growth",
+    origin: [0.5, 0.92], headingTurns: 0.75, baseLength: 0.18, lengthDecay: 0.66,
+    branchOffsetsTurns: [-0.075, 0.075], generations: 5,
+  };
+  const flow = {
+    id: "creative-render-flow-guidance", mode: "gradient", strength: 2.4, sampleStep: 0.02,
+    field: { id: "creative-render-flow-field", seed: 4242, frequency: 3.5, octaves: 4, lacunarity: 2, gain: 0.5, offset: [0.1, -0.2] },
   };
   const choices = {
     zero: { id: "creative-render-branch-flow-guidance", curvatureScale: 0, maxControlOffset: 0.18 },
     active: { id: "creative-render-branch-flow-guidance", curvatureScale: 1.1, maxControlOffset: 0.18 },
   };
+  const registry = runtime.createHandRegistry(guided.BRANCH_FLOW_GUIDED_CURVE_HANDS);
+  const execute = (state, callerKind) => runtime.executeHandGraph({ registry, graph: guided.BRANCH_FLOW_GUIDED_CURVE_GRAPH, initialState: state, context: { callerKind } });
 
-  const execute = (state, callerKind) => runtime.executeHandGraph({
-    registry: runtime.createHandRegistry(guided.BRANCH_FLOW_GUIDED_CURVE_HANDS),
-    graph: guided.BRANCH_FLOW_GUIDED_CURVE_GRAPH,
-    initialState: state,
-    context: { callerKind },
-  });
-
-  const variants = {};
-  for (const [name, guidance] of Object.entries(choices)) {
-    const state = guided.makeBranchFlowGuidedCurveState({ ...structuredClone(shared), guidance: structuredClone(guidance) });
-    const requestBytesBefore = {
-      growth: stableBytes(state.branchGrowthRequest),
-      field: stableBytes(state.fieldRequest),
-      flow: stableBytes(state.flowRequest),
-      guidance: stableBytes(state.branchFlowGuidanceRequest),
+  async function runVariant(name, guidance) {
+    const initialState = guided.makeBranchFlowGuidedCurveState({ growth: structuredClone(growth), flow: structuredClone(flow), guidance: structuredClone(guidance) });
+    const requestBytes = {
+      growth: stableBytes(initialState.branchGrowthRequest), field: stableBytes(initialState.fieldRequest),
+      flow: stableBytes(initialState.flowRequest), guidance: stableBytes(initialState.branchFlowGuidanceRequest),
     };
-    const human = execute(state, "human");
-    const machine = execute(state, "machine");
+    const human = execute(initialState, "human");
+    const machine = execute(initialState, "machine");
     if (human.finalStateHash !== machine.finalStateHash) throw new Error(`VFX flow-guided branch caller-neutral repeat failed for ${name}`);
+    const state = human.finalState;
+    const growthSource = state.branchGrowthSource;
+    const network = state.branchGrowthNetworks?.[growthSource?.id];
+    const fieldSource = state.fieldSource;
+    const flowSource = state.flowSource;
+    const guidanceSource = state.branchFlowGuidanceSource;
+    const curveSet = state.branchFlowGuidedCurveSets?.[guidanceSource?.id];
+    const realization = state.realizations?.branchFlowGuidedStaticSvg;
 
-    const finalState = human.finalState;
-    const growthSource = finalState.branchGrowthSource;
-    const network = finalState.branchGrowthNetworks?.[growthSource?.id];
-    const fieldSource = finalState.fieldSource;
-    const flowSource = finalState.flowSource;
-    const guidanceSource = finalState.branchFlowGuidanceSource;
-    const curveSet = finalState.branchFlowGuidedCurveSets?.[guidanceSource?.id];
-    const realization = finalState.realizations?.branchFlowGuidedStaticSvg;
-    if (!growthSource || runtime.hashValue(growthSource) !== finalState.branchGrowthSourceHash) throw new Error(`VFX flow-guided branch growth source hash drifted for ${name}`);
-    if (!network || network.schema !== "axm.branch-growth-network2d/v0.1" || network.sourceHash !== finalState.branchGrowthSourceHash || network.derived !== true || network.rebuildable !== true) throw new Error(`VFX flow-guided branch network boundary drifted for ${name}`);
-    if (!fieldSource || runtime.hashValue(fieldSource) !== finalState.fieldSourceHash) throw new Error(`VFX flow-guided scalar source hash drifted for ${name}`);
-    if (!flowSource || runtime.hashValue(flowSource) !== finalState.flowSourceHash || flowSource.scalarSource?.sourceHash !== finalState.fieldSourceHash) throw new Error(`VFX flow-guided flow source lineage drifted for ${name}`);
-    if (!guidanceSource || runtime.hashValue(guidanceSource) !== finalState.branchFlowGuidanceSourceHash) throw new Error(`VFX flow-guided guidance source hash drifted for ${name}`);
-    if (guidanceSource.branchSource?.sourceHash !== finalState.branchGrowthSourceHash || guidanceSource.baseNetworkHash !== network.networkHash || guidanceSource.flowSource?.sourceHash !== finalState.flowSourceHash || guidanceSource.flowSource?.scalarSourceHash !== finalState.fieldSourceHash) throw new Error(`VFX flow-guided guidance lineage drifted for ${name}`);
-    if (!curveSet || curveSet.schema !== "axm.flow-guided-branch-curves2d/v0.1" || curveSet.derived !== true || curveSet.rebuildable !== true || curveSet.branchSourceHash !== finalState.branchGrowthSourceHash || curveSet.baseNetworkHash !== network.networkHash || curveSet.scalarSourceHash !== finalState.fieldSourceHash || curveSet.flowSourceHash !== finalState.flowSourceHash || curveSet.guidanceSourceHash !== finalState.branchFlowGuidanceSourceHash) throw new Error(`VFX flow-guided curve-set lineage drifted for ${name}`);
-    if (curveSet.curveCount !== network.segmentCount || curveSet.curveCount !== 31) throw new Error(`VFX flow-guided bounded topology drifted for ${name}`);
-    if (!realization || realization.schema !== "axm.vfx.branch-flow-guided-static-svg/v0.1" || realization.curveSetHash !== curveSet.curveSetHash || realization.baseNetworkHash !== network.networkHash || realization.flowSourceHash !== finalState.flowSourceHash || realization.guidanceSourceHash !== finalState.branchFlowGuidanceSourceHash) throw new Error(`VFX flow-guided SVG lineage drifted for ${name}`);
-    if (stableBytes(finalState.branchGrowthRequest).compare(requestBytesBefore.growth) !== 0 || stableBytes(finalState.fieldRequest).compare(requestBytesBefore.field) !== 0 || stableBytes(finalState.flowRequest).compare(requestBytesBefore.flow) !== 0 || stableBytes(finalState.branchFlowGuidanceRequest).compare(requestBytesBefore.guidance) !== 0) throw new Error(`VFX flow-guided caller request mutated for ${name}`);
+    if (!growthSource || runtime.hashValue(growthSource) !== state.branchGrowthSourceHash) throw new Error(`growth source hash drifted for ${name}`);
+    if (!network || network.schema !== "axm.branch-growth-network2d/v0.1" || network.sourceHash !== state.branchGrowthSourceHash || network.derived !== true || network.rebuildable !== true || network.segmentCount !== 31) throw new Error(`base network boundary drifted for ${name}`);
+    if (!fieldSource || runtime.hashValue(fieldSource) !== state.fieldSourceHash) throw new Error(`scalar source hash drifted for ${name}`);
+    if (!flowSource || runtime.hashValue(flowSource) !== state.flowSourceHash || flowSource.scalarSource?.sourceHash !== state.fieldSourceHash) throw new Error(`flow source lineage drifted for ${name}`);
+    if (!guidanceSource || runtime.hashValue(guidanceSource) !== state.branchFlowGuidanceSourceHash || guidanceSource.branchSource?.sourceHash !== state.branchGrowthSourceHash || guidanceSource.baseNetworkHash !== network.networkHash || guidanceSource.flowSource?.sourceHash !== state.flowSourceHash || guidanceSource.flowSource?.scalarSourceHash !== state.fieldSourceHash) throw new Error(`guidance source lineage drifted for ${name}`);
+    if (!curveSet || curveSet.schema !== "axm.flow-guided-branch-curves2d/v0.1" || curveSet.derived !== true || curveSet.rebuildable !== true || curveSet.curveCount !== network.segmentCount || curveSet.branchSourceHash !== state.branchGrowthSourceHash || curveSet.baseNetworkHash !== network.networkHash || curveSet.scalarSourceHash !== state.fieldSourceHash || curveSet.flowSourceHash !== state.flowSourceHash || curveSet.guidanceSourceHash !== state.branchFlowGuidanceSourceHash) throw new Error(`curve-set lineage drifted for ${name}`);
+    if (!realization || realization.schema !== "axm.vfx.branch-flow-guided-static-svg/v0.1" || realization.curveSetHash !== curveSet.curveSetHash || realization.baseNetworkHash !== network.networkHash || realization.flowSourceHash !== state.flowSourceHash || realization.guidanceSourceHash !== state.branchFlowGuidanceSourceHash) throw new Error(`SVG lineage drifted for ${name}`);
+    if (stableBytes(state.branchGrowthRequest).compare(requestBytes.growth) || stableBytes(state.fieldRequest).compare(requestBytes.field) || stableBytes(state.flowRequest).compare(requestBytes.flow) || stableBytes(state.branchFlowGuidanceRequest).compare(requestBytes.guidance)) throw new Error(`caller request mutated for ${name}`);
 
     curveSet.curves.forEach((curve, index) => {
       const segment = network.segments[index];
-      if (curve.segmentId !== segment.id || curve.parentId !== segment.parentId || curve.generation !== segment.generation || JSON.stringify(curve.start) !== JSON.stringify(segment.start) || JSON.stringify(curve.end) !== JSON.stringify(segment.end)) {
-        throw new Error(`VFX flow-guided curve changed retained topology/endpoints for ${name}:${index}`);
-      }
+      if (curve.segmentId !== segment.id || curve.parentId !== segment.parentId || curve.generation !== segment.generation || JSON.stringify(curve.start) !== JSON.stringify(segment.start) || JSON.stringify(curve.end) !== JSON.stringify(segment.end)) throw new Error(`curve topology/endpoints drifted for ${name}:${index}`);
     });
 
-    const exactBudget = guided.buildBranchFlowGuidedCurveSetHand.execute(finalState, { maxCurves: curveSet.curveCount }, {}).state.branchFlowGuidedCurveSets[guidanceSource.id];
-    const roomyBudget = guided.buildBranchFlowGuidedCurveSetHand.execute(finalState, { maxCurves: 2048 }, {}).state.branchFlowGuidedCurveSets[guidanceSource.id];
-    if (exactBudget.curveSetHash !== roomyBudget.curveSetHash || roomyBudget.curveSetHash !== curveSet.curveSetHash) throw new Error(`VFX flow-guided working-set budget changed derived curves for ${name}`);
+    const exactBudget = guided.buildBranchFlowGuidedCurveSetHand.execute(state, { maxCurves: curveSet.curveCount }, {}).state.branchFlowGuidedCurveSets[guidanceSource.id];
+    const roomyBudget = guided.buildBranchFlowGuidedCurveSetHand.execute(state, { maxCurves: 2048 }, {}).state.branchFlowGuidedCurveSets[guidanceSource.id];
+    if (exactBudget.curveSetHash !== roomyBudget.curveSetHash || roomyBudget.curveSetHash !== curveSet.curveSetHash) throw new Error(`sufficient curve budget changed output for ${name}`);
     let budgetFailure = null;
-    try {
-      guided.buildBranchFlowGuidedCurveSetHand.execute(finalState, { maxCurves: curveSet.curveCount - 1 }, {});
-    } catch (error) {
-      budgetFailure = String(error?.message || error);
-    }
-    if (!budgetFailure?.includes("curve budget exceeded")) throw new Error(`VFX flow-guided insufficient curve budget did not fail loudly for ${name}`);
-    if (runtime.hashValue(finalState.branchFlowGuidanceSource) !== finalState.branchFlowGuidanceSourceHash) throw new Error(`VFX flow-guided failed budget attempt rewrote retained guidance source for ${name}`);
+    try { guided.buildBranchFlowGuidedCurveSetHand.execute(state, { maxCurves: curveSet.curveCount - 1 }, {}); }
+    catch (error) { budgetFailure = String(error?.message || error); }
+    if (!budgetFailure?.includes("curve budget exceeded")) throw new Error(`insufficient curve budget did not fail loudly for ${name}`);
+    if (runtime.hashValue(state.branchFlowGuidanceSource) !== state.branchFlowGuidanceSourceHash) throw new Error(`failed curve budget rewrote guidance source for ${name}`);
 
-    const adapted = flowGuidedBranchCurveSetToAxmScene(curveSet);
-    variants[name] = {
-      requestBytesBefore,
-      growthSource,
-      growthSourceBytes: stableBytes(growthSource),
-      network,
-      networkBytes: stableBytes(network),
-      fieldSource,
-      fieldSourceBytes: stableBytes(fieldSource),
-      flowSource,
-      flowSourceBytes: stableBytes(flowSource),
-      guidanceSource,
-      guidanceSourceBytes: stableBytes(guidanceSource),
-      curveSet,
-      curveSetBytes: stableBytes(curveSet),
-      svgBytes: Buffer.from(realization.content, "utf8"),
-      stateBytes: stableBytes(finalState),
-      adapted,
-      finalStateHash: human.finalStateHash,
-      budgetFailure,
-      realization,
+    return {
+      growthSource, growthSourceHash: state.branchGrowthSourceHash, growthSourceBytes: stableBytes(growthSource),
+      network, networkBytes: stableBytes(network), fieldSource, fieldSourceHash: state.fieldSourceHash, fieldSourceBytes: stableBytes(fieldSource),
+      flowSource, flowSourceHash: state.flowSourceHash, flowSourceBytes: stableBytes(flowSource),
+      guidanceSource, guidanceSourceHash: state.branchFlowGuidanceSourceHash, guidanceSourceBytes: stableBytes(guidanceSource),
+      curveSet, curveSetBytes: stableBytes(curveSet), realization, svgBytes: Buffer.from(realization.content, "utf8"),
+      stateBytes: stableBytes(state), adapted: flowGuidedBranchCurveSetToAxmScene(curveSet), finalStateHash: human.finalStateHash, budgetFailure,
     };
   }
 
-  const zero = variants.zero;
-  const active = variants.active;
-  if (zero.growthSourceBytes.compare(active.growthSourceBytes) !== 0 || zero.networkBytes.compare(active.networkBytes) !== 0 || zero.fieldSourceBytes.compare(active.fieldSourceBytes) !== 0 || zero.flowSourceBytes.compare(active.flowSourceBytes) !== 0) {
-    throw new Error("flow-guided proof changed retained branch/network/field/flow truth across curvature choice");
-  }
-  if (zero.guidanceSource.curvatureScale !== 0 || active.guidanceSource.curvatureScale !== 1.1 || zero.guidanceSource.maxControlOffset !== active.guidanceSource.maxControlOffset) throw new Error("flow-guided proof did not isolate the explicit curvatureScale choice");
-  if (zero.guidanceSourceHash === active.guidanceSourceHash || zero.curveSet.curveSetHash === active.curveSet.curveSetHash) throw new Error("flow-guided explicit curvature choice did not change derived guidance/curve identity");
-  if (zero.curveSet.maxOffsetMagnitude !== 0 || zero.curveSet.meanOffsetMagnitude !== 0) throw new Error("zero-curvature branch guidance was not an exact derived geometry no-op");
+  const zero = await runVariant("zero", choices.zero);
+  const active = await runVariant("active", choices.active);
+  if (zero.growthSourceBytes.compare(active.growthSourceBytes) || zero.networkBytes.compare(active.networkBytes) || zero.fieldSourceBytes.compare(active.fieldSourceBytes) || zero.flowSourceBytes.compare(active.flowSourceBytes)) throw new Error("retained branch/network/field/flow truth changed across curvature choice");
+  if (zero.guidanceSource.curvatureScale !== 0 || active.guidanceSource.curvatureScale !== 1.1 || zero.guidanceSource.maxControlOffset !== active.guidanceSource.maxControlOffset) throw new Error("curvatureScale isolation failed");
+  if (zero.guidanceSourceHash === active.guidanceSourceHash || zero.curveSet.curveSetHash === active.curveSet.curveSetHash) throw new Error("curvature choice did not change guidance/curve identity");
+  if (zero.curveSet.maxOffsetMagnitude !== 0 || zero.curveSet.meanOffsetMagnitude !== 0) throw new Error("zero curvature was not an exact derived no-op");
   zero.curveSet.curves.forEach((curve, index) => {
-    if (JSON.stringify(curve.control) !== JSON.stringify(midpoint(zero.network.segments[index]))) throw new Error(`zero-curvature control did not remain exact midpoint at ${index}`);
+    if (JSON.stringify(curve.control) !== JSON.stringify(midpoint(zero.network.segments[index]))) throw new Error(`zero curvature control was not midpoint at ${index}`);
   });
-  if (!(active.curveSet.maxOffsetMagnitude > 0) || !active.curveSet.curves.some((curve, index) => JSON.stringify(curve.control) !== JSON.stringify(zero.curveSet.curves[index].control))) {
-    throw new Error("active branch flow guidance did not change any derived control point");
-  }
-  if (zero.svgBytes.compare(active.svgBytes) === 0 || zero.adapted.bytes.compare(active.adapted.bytes) === 0) throw new Error("active derived curve guidance did not reach replaceable SVG/native scene bodies");
+  if (!(active.curveSet.maxOffsetMagnitude > 0) || !active.curveSet.curves.some((curve, index) => JSON.stringify(curve.control) !== JSON.stringify(zero.curveSet.curves[index].control))) throw new Error("active curvature changed no derived control point");
+  if (zero.svgBytes.compare(active.svgBytes) === 0 || zero.adapted.bytes.compare(active.adapted.bytes) === 0) throw new Error("active curvature did not reach both replaceable observation bodies");
 
+  const variants = { zero, active };
   const receiptVariants = Object.fromEntries(Object.entries(variants).map(([name, row]) => [name, {
-    growth_source: { hash: row.network.sourceHash, bytes_sha256: sha256(row.growthSourceBytes) },
-    network: { hash: row.network.networkHash, bytes_sha256: sha256(row.networkBytes), segment_count: row.network.segmentCount, derived: row.network.derived, rebuildable: row.network.rebuildable },
-    scalar_source: { hash: row.curveSet.scalarSourceHash, bytes_sha256: sha256(row.fieldSourceBytes) },
-    flow_source: { hash: row.curveSet.flowSourceHash, bytes_sha256: sha256(row.flowSourceBytes), mode: row.flowSource.mode },
-    guidance_source: { hash: row.curveSet.guidanceSourceHash, bytes_sha256: sha256(row.guidanceSourceBytes), curvature_scale: row.guidanceSource.curvatureScale, max_control_offset: row.guidanceSource.maxControlOffset },
-    curve_set: { hash: row.curveSet.curveSetHash, bytes_sha256: sha256(row.curveSetBytes), curve_count: row.curveSet.curveCount, max_offset_magnitude: row.curveSet.maxOffsetMagnitude, mean_offset_magnitude: row.curveSet.meanOffsetMagnitude, clamped_control_count: row.curveSet.clampedControlCount, derived: row.curveSet.derived, rebuildable: row.curveSet.rebuildable },
+    growth_source: { hash: row.growthSourceHash, bytes_sha256: sha256(row.growthSourceBytes) },
+    network: { hash: row.network.networkHash, bytes_sha256: sha256(row.networkBytes), segment_count: row.network.segmentCount, derived: true, rebuildable: true },
+    scalar_source: { hash: row.fieldSourceHash, bytes_sha256: sha256(row.fieldSourceBytes) },
+    flow_source: { hash: row.flowSourceHash, bytes_sha256: sha256(row.flowSourceBytes), mode: row.flowSource.mode },
+    guidance_source: { hash: row.guidanceSourceHash, bytes_sha256: sha256(row.guidanceSourceBytes), curvature_scale: row.guidanceSource.curvatureScale, max_control_offset: row.guidanceSource.maxControlOffset },
+    curve_set: { hash: row.curveSet.curveSetHash, bytes_sha256: sha256(row.curveSetBytes), curve_count: row.curveSet.curveCount, max_offset_magnitude: row.curveSet.maxOffsetMagnitude, mean_offset_magnitude: row.curveSet.meanOffsetMagnitude, clamped_control_count: row.curveSet.clampedControlCount, derived: true, rebuildable: true },
     working_set_budget: { exact_curve_count_matches_2048: true, insufficient_budget_failed_loudly: true, insufficient_budget_error: row.budgetFailure },
     donor_svg: { schema: row.realization.schema, bytes_sha256: sha256(row.svgBytes), curve_set_hash: row.realization.curveSetHash, replaceable_realization: true },
     native_scene: { bytes_sha256: sha256(row.adapted.bytes), adapter: row.adapted.observation },
-    final_state_sha256: sha256(row.stateBytes),
-    caller_neutral_final_state_hash: row.finalStateHash,
+    final_state_sha256: sha256(row.stateBytes), caller_neutral_final_state_hash: row.finalStateHash,
   }]));
 
   const receipt = {
-    contract: CONTRACT,
-    version: VERSION,
+    contract: CONTRACT, version: VERSION,
     donor: {
-      repository: "mike-axiom-mir/axm-visual-effect-fabric",
-      revision: vfxRevision,
-      graph_id: guided.BRANCH_FLOW_GUIDED_CURVE_GRAPH.id,
-      graph_version: guided.BRANCH_FLOW_GUIDED_CURVE_GRAPH.version,
+      repository: "mike-axiom-mir/axm-visual-effect-fabric", revision: vfxRevision,
+      graph_id: guided.BRANCH_FLOW_GUIDED_CURVE_GRAPH.id, graph_version: guided.BRANCH_FLOW_GUIDED_CURVE_GRAPH.version,
       hand_ids: expectedHands,
       files: {
         "hand-lab/src/hand-runtime.mjs": sources.runtime.sha256,
@@ -336,25 +272,18 @@ export async function observeVisualEffectBranchFlowGuidedNative(root, options = 
     caller_authority: {
       explicit_choice: "branchFlowGuidanceRequest.curvatureScale",
       held_constant: ["branchGrowthRequest", "fieldRequest", "flowRequest", "branchFlowGuidanceRequest.maxControlOffset"],
-      caller_requests_mutated: false,
-      caller_neutral_repeat_verification: "PASS",
+      caller_requests_mutated: false, caller_neutral_repeat_verification: "PASS",
       retained_growth_field_flow_sources_remain_authoritative: true,
       base_network_is_derived_rebuildable_not_canonical: true,
       guided_curve_set_is_derived_rebuildable_not_canonical: true,
-      donor_svg_is_canonical: false,
-      native_scene_is_canonical: false,
-      consumer_semantics_assigned: false,
+      donor_svg_is_canonical: false, native_scene_is_canonical: false, consumer_semantics_assigned: false,
     },
     variants: receiptVariants,
     cross_variant_gates: {
-      retained_growth_source_identical: true,
-      retained_base_network_identical: true,
-      retained_scalar_source_identical: true,
-      retained_flow_source_identical: true,
-      zero_curvature_exact_midpoint_noop: true,
-      active_curvature_changes_only_guidance_and_derived_curve_geometry: true,
-      branch_endpoints_and_topology_preserved: true,
-      active_choice_reaches_donor_svg_and_native_scene: true,
+      retained_growth_source_identical: true, retained_base_network_identical: true,
+      retained_scalar_source_identical: true, retained_flow_source_identical: true,
+      zero_curvature_exact_midpoint_noop: true, active_curvature_changes_only_guidance_and_derived_curve_geometry: true,
+      branch_endpoints_and_topology_preserved: true, active_choice_reaches_donor_svg_and_native_scene: true,
     },
     replaceability: {
       same_derived_curve_set_can_feed_donor_svg_and_native_scene_realizations: true,
@@ -369,24 +298,15 @@ export async function observeVisualEffectBranchFlowGuidedNative(root, options = 
   };
 
   return {
-    zeroGrowthSourceBytes: zero.growthSourceBytes,
-    activeGrowthSourceBytes: active.growthSourceBytes,
-    zeroNetworkBytes: zero.networkBytes,
-    activeNetworkBytes: active.networkBytes,
-    zeroFieldSourceBytes: zero.fieldSourceBytes,
-    activeFieldSourceBytes: active.fieldSourceBytes,
-    zeroFlowSourceBytes: zero.flowSourceBytes,
-    activeFlowSourceBytes: active.flowSourceBytes,
-    zeroGuidanceSourceBytes: zero.guidanceSourceBytes,
-    activeGuidanceSourceBytes: active.guidanceSourceBytes,
-    zeroCurveSetBytes: zero.curveSetBytes,
-    activeCurveSetBytes: active.curveSetBytes,
-    zeroSvgBytes: zero.svgBytes,
-    activeSvgBytes: active.svgBytes,
-    zeroStateBytes: zero.stateBytes,
-    activeStateBytes: active.stateBytes,
-    zeroSceneBytes: zero.adapted.bytes,
-    activeSceneBytes: active.adapted.bytes,
+    zeroGrowthSourceBytes: zero.growthSourceBytes, activeGrowthSourceBytes: active.growthSourceBytes,
+    zeroNetworkBytes: zero.networkBytes, activeNetworkBytes: active.networkBytes,
+    zeroFieldSourceBytes: zero.fieldSourceBytes, activeFieldSourceBytes: active.fieldSourceBytes,
+    zeroFlowSourceBytes: zero.flowSourceBytes, activeFlowSourceBytes: active.flowSourceBytes,
+    zeroGuidanceSourceBytes: zero.guidanceSourceBytes, activeGuidanceSourceBytes: active.guidanceSourceBytes,
+    zeroCurveSetBytes: zero.curveSetBytes, activeCurveSetBytes: active.curveSetBytes,
+    zeroSvgBytes: zero.svgBytes, activeSvgBytes: active.svgBytes,
+    zeroStateBytes: zero.stateBytes, activeStateBytes: active.stateBytes,
+    zeroSceneBytes: zero.adapted.bytes, activeSceneBytes: active.adapted.bytes,
     receipt,
   };
 }
