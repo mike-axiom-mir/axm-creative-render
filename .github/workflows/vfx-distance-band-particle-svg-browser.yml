@@ -1,0 +1,217 @@
+name: vfx-distance-band-particle-svg-browser
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vfx-distance-band-particle-svg-browser-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-current-vfx-distance-band-particle-svg-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: acc8fa1596eada6cc3e3432389f84868f78441cc
+          path: visual-effect-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Prepare retained proof directory
+        run: |
+          root=creative-render/build/vfx-distance-band-particle-svg-browser
+          mkdir -p "$root"
+          cat > "$root/donor-revisions.json" <<'EOF'
+          {
+            "visual_effect_fabric": "acc8fa1596eada6cc3e3432389f84868f78441cc"
+          }
+          EOF
+          cat > "$root/attempt-inputs.json" <<'EOF'
+          {
+            "source_families": ["fbm-value-noise-2d", "cellular-nearest-feature-2d"],
+            "shared_particle_source_count": 49,
+            "shared_mask": {"threshold":0.5,"softness":0.1,"invert":false},
+            "shared_distance": {"isoLevel":0.5},
+            "shared_band": {"innerWidth":0.1,"outerWidth":0.15,"softness":0.03},
+            "shared_weight": {"transform":"band-coverage-power-v0.1","exponent":1.3},
+            "grid": {"width":48,"height":32,"cells":1536},
+            "donor_svg": {"width":640,"height":420,"padding":20,"minRadius":1.2,"maxRadius":5.2,"minOpacity":0.08,"maxOpacity":0.94,"pointColor":"#69d7ff","backgroundColor":"#071018"},
+            "browser_observer": {"pixelFormat":"RGBA8","networkRequired":false},
+            "consumer_semantics_assigned": false
+          }
+          EOF
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Build exact multi-family donor SVG artifacts
+        run: |
+          root=creative-render/build/vfx-distance-band-particle-svg-browser
+          node creative-render/src/vfx_distance_band_particle_svg_browser_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --vfx-revision acc8fa1596eada6cc3e3432389f84868f78441cc \
+            --fbm-weighted-set "$root/fbm-weighted-set.json" \
+            --cellular-weighted-set "$root/cellular-weighted-set.json" \
+            --fbm-svg "$root/fbm.svg" \
+            --cellular-svg "$root/cellular.svg" \
+            --probe "$root/browser-probe.html" \
+            --receipt "$root/build.receipt.json"
+
+      - name: Independently assert retained authority, source-truth rebuild and replaceable SVG boundary
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-distance-band-particle-svg-browser/';
+          const [receiptBytes,fbmSetBytes,cellularSetBytes,fbmSvg,cellularSvg,probe,donorBytes,attemptBytes]=await Promise.all([
+            readFile(root+'build.receipt.json'),
+            readFile(root+'fbm-weighted-set.json'),
+            readFile(root+'cellular-weighted-set.json'),
+            readFile(root+'fbm.svg'),
+            readFile(root+'cellular.svg'),
+            readFile(root+'browser-probe.html'),
+            readFile(root+'donor-revisions.json'),
+            readFile(root+'attempt-inputs.json'),
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          const d=JSON.parse(donorBytes.toString('utf8'));
+          const a=JSON.parse(attemptBytes.toString('utf8'));
+          const v=r.visual_effect_fabric;
+          const fbm=JSON.parse(fbmSetBytes.toString('utf8'));
+          const cellular=JSON.parse(cellularSetBytes.toString('utf8'));
+          if(d.visual_effect_fabric!=='acc8fa1596eada6cc3e3432389f84868f78441cc'||v.donor_revision!==d.visual_effect_fabric)throw new Error('pinned current VFX revision evidence drifted');
+          if(r.contract!=='AXM_CREATIVE_VFX_DISTANCE_BAND_PARTICLE_SVG_BROWSER_BUILD_RECEIPT'||r.version!==1)throw new Error('distance-band particle SVG build receipt drifted');
+          if(v.graphs.fbm.id!=='fx.particle.distance-band-weighted-static-svg'||v.graphs.fbm.version!=='0.1.0'||v.graphs.cellular.id!=='fx.particle.distance-band-weighted-static-svg-cellular'||v.graphs.cellular.version!=='0.1.0')throw new Error('current multi-family particle SVG graphs were not exercised');
+          if(v.realization_hand.id!=='fx.particle.distance-band-weighted-static-svg-realize'||v.realization_hand.version!=='0.1.0')throw new Error('current particle SVG realization Hand was not exercised');
+          if(v.shared_contract.particle_count!==a.shared_particle_source_count||v.shared_contract.grid_cells!==a.grid.cells||v.shared_contract.renderer!=='axm.vfx.distance-band-particle-static-svg/v0.1'||v.shared_contract.source_family_branching_in_realizer!==false)throw new Error('shared SVG contract drifted');
+          if(v.authority.scalar_mask_distance_band_particle_weight_sources!=='RETAINED_VFX_SOURCE_AUTHORITY'||v.authority.caller_particles!=='CALLER_OWNED_RETAINED_SOURCE'||v.authority.weighted_particle_sets!=='DERIVED_REBUILDABLE_VFX_WORKING_SETS'||v.authority.svg_realizations!=='DERIVED_REPLACEABLE_VFX_BODIES'||v.authority.renderer_controls!=='DISPOSABLE_OBSERVER_CONTROLS'||v.authority.browser_pixels!=='NOT_OBSERVED_BY_THIS_FUNCTION')throw new Error('pre-browser authority boundary drifted');
+          if(v.truth_boundary.browser_pixels_proven!==false||v.truth_boundary.aesthetic_quality_proven!==false||v.truth_boundary.particle_semantics_proven!==false||v.truth_boundary.physical_behavior_proven!==false)throw new Error('pre-browser truth boundary was promoted');
+
+          if(r.outputs.fbm_weighted_set.sha256!==sha(fbmSetBytes)||r.outputs.cellular_weighted_set.sha256!==sha(cellularSetBytes)||r.outputs.fbm_svg.sha256!==sha(fbmSvg)||r.outputs.cellular_svg.sha256!==sha(cellularSvg)||r.outputs.browser_probe_html.sha256!==sha(probe))throw new Error('retained proof byte binding drifted');
+          if(fbm.schema!=='axm.distance-band-particle-weight-set/v0.1'||cellular.schema!==fbm.schema||fbm.derived!==true||fbm.rebuildable!==true||cellular.derived!==true||cellular.rebuildable!==true)throw new Error('weighted-set derived/rebuildable boundary drifted');
+          if(fbm.particleCount!==a.shared_particle_source_count||cellular.particleCount!==a.shared_particle_source_count||fbm.samples.length!==a.shared_particle_source_count||cellular.samples.length!==a.shared_particle_source_count)throw new Error('shared caller particle cardinality drifted');
+          if(v.variants.fbm.weighted_set_hash!==fbm.weightedSetHash||v.variants.cellular.weighted_set_hash!==cellular.weightedSetHash||v.variants.fbm.weighted_set_sha256!==sha(fbmSetBytes)||v.variants.cellular.weighted_set_sha256!==sha(cellularSetBytes))throw new Error('weighted-set retained byte identity drifted');
+          if(v.variants.fbm.derived_from_weighted_set_hash!==fbm.weightedSetHash||v.variants.cellular.derived_from_weighted_set_hash!==cellular.weightedSetHash)throw new Error('donor SVG lost selected weighted-set lineage');
+          if(!fbmSvg.toString('utf8').includes('data-layer="weighted-particles"')||!cellularSvg.toString('utf8').includes('data-layer="weighted-particles"'))throw new Error('donor SVG weighted-particle layer missing');
+          if((fbmSvg.toString('utf8').match(/<circle /g)||[]).length!==a.shared_particle_source_count||(cellularSvg.toString('utf8').match(/<circle /g)||[]).length!==a.shared_particle_source_count)throw new Error('donor SVG particle circle count drifted');
+
+          for(const name of ['fbm','cellular']){
+            const row=v.variants[name];
+            if(row.gates.caller_neutral_replay!==true||row.gates.exact_budget_noncreative!==true||row.gates.roomy_budget_noncreative!==true||row.gates.alternate_renderer_preserved_weight_truth!==true||row.gates.alternate_renderer_artifact_differs!==true)throw new Error(`${name} positive truth gates failed`);
+            if(!row.gates.insufficient_particle_budget_failed.includes('distanceBandParticleSvg particle budget exceeded')||!row.gates.insufficient_band_cell_budget_failed.includes('distanceBandParticle band cell budget exceeded')||!row.gates.insufficient_comparison_budget_failed.includes('maskDistance comparison budget exceeded')||!row.gates.self_consistent_weight_tamper_failed.includes('distance-band particle SVG weighted set differs from source-truth rebuild'))throw new Error(`${name} fail-closed/tamper gate drifted`);
+          }
+          if(r.comparison.shared_caller_particle_source!==true||r.comparison.distinct_scalar_sources!==true||r.comparison.distinct_weighted_sets!==true||r.comparison.distinct_donor_svg_bytes!==true||r.comparison.both_svgs_bound_to_selected_weighted_sets!==true)throw new Error('multi-family SVG comparison gate failed');
+          if(sha(fbmSvg)===sha(cellularSvg)||fbm.weightedSetHash===cellular.weightedSetHash)throw new Error('distinct source-derived weights collapsed before browser observation');
+
+          const evidence={
+            contract:'AXM_CREATIVE_VFX_DISTANCE_BAND_PARTICLE_SVG_INDEPENDENT_EVIDENCE',
+            version:1,
+            build_receipt_sha256:sha(receiptBytes),
+            donor_revision:d.visual_effect_fabric,
+            weighted_set_hashes:{fbm:fbm.weightedSetHash,cellular:cellular.weightedSetHash},
+            svg_sha256:{fbm:sha(fbmSvg),cellular:sha(cellularSvg)},
+            gates:{
+              retained_source_authority:'PASS',
+              retained_caller_particle_source:'PASS',
+              derived_weighted_set_boundary:'PASS',
+              source_truth_rebuild_tamper_rejection:'PASS',
+              noncreative_sufficient_budgets:'PASS',
+              insufficient_budgets_fail_closed:'PASS',
+              replaceable_renderer_controls:'PASS',
+              exact_svg_byte_binding:'PASS',
+              pre_browser_truth_boundary:'PASS'
+            }
+          };
+          await writeFile(root+'independent-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_distance_band_particle_svg_lineage=PASS');
+          console.log(`fbm_weighted_set_hash=${fbm.weightedSetHash}`);
+          console.log(`cellular_weighted_set_hash=${cellular.weightedSetHash}`);
+          console.log(`fbm_svg_sha256=${sha(fbmSvg)}`);
+          console.log(`cellular_svg_sha256=${sha(cellularSvg)}`);
+          NODE
+
+      - name: Locate installed browser and retain exact version
+        run: |
+          root=creative-render/build/vfx-distance-band-particle-svg-browser
+          browser="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || true)"
+          if [ -z "$browser" ]; then
+            echo "No supported Chromium-family browser is installed on this runner" >&2
+            exit 1
+          fi
+          printf '%s\n' "$browser" > "$root/browser-path.txt"
+          "$browser" --version | tee "$root/browser-version.txt"
+
+      - name: Rasterize exact donor SVGs through the real headless browser
+        run: |
+          root=creative-render/build/vfx-distance-band-particle-svg-browser
+          browser="$(cat "$root/browser-path.txt")"
+          probe_uri="file://$(realpath "$root/browser-probe.html")"
+          "$browser" --headless=new --no-sandbox --disable-gpu --allow-file-access-from-files --virtual-time-budget=5000 --dump-dom "$probe_uri" > "$root/browser-probe.dump.html"
+          grep -q 'data-axm-done="true"' "$root/browser-probe.dump.html"
+          "$browser" --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=640,420 --screenshot="$PWD/$root/fbm-browser.png" "file://$(realpath "$root/fbm.svg")"
+          "$browser" --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=640,420 --screenshot="$PWD/$root/cellular-browser.png" "file://$(realpath "$root/cellular.svg")"
+          test -s "$root/fbm-browser.png"
+          test -s "$root/cellular-browser.png"
+
+      - name: Verify and bind raw browser pixel evidence
+        run: |
+          root=creative-render/build/vfx-distance-band-particle-svg-browser
+          node creative-render/src/vfx_distance_band_particle_svg_browser_cli.mjs verify-browser \
+            --dump "$root/browser-probe.dump.html" \
+            --probe "$root/browser-probe.html" \
+            --build-receipt "$root/build.receipt.json" \
+            --browser-version "$root/browser-version.txt" \
+            --fbm-screenshot "$root/fbm-browser.png" \
+            --cellular-screenshot "$root/cellular-browser.png" \
+            --out "$root/browser-raster-evidence.json"
+
+      - name: Assert browser evidence stays observational and derived
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          const root='creative-render/build/vfx-distance-band-particle-svg-browser/';
+          const e=JSON.parse(await readFile(root+'browser-raster-evidence.json','utf8'));
+          if(e.contract!=='AXM_CREATIVE_VFX_DISTANCE_BAND_PARTICLE_SVG_BROWSER_RASTER_EVIDENCE'||e.version!==1)throw new Error('browser evidence contract drifted');
+          if(e.raster.schema!=='axm.creative-render.distance-band-particle-browser-svg-raster-evidence/v1'||e.raster.width!==640||e.raster.height!==420||e.raster.pixel_count!==268800||e.raster.rgba_bytes!==1075200)throw new Error('browser raster contract drifted');
+          if(e.raster.fbm_svg_sha256!==e.svg_sha256.fbm||e.raster.cellular_svg_sha256!==e.svg_sha256.cellular)throw new Error('browser raster lost exact donor SVG byte identity');
+          if(e.raster.different_pixels<1||e.raster.different_channels<1||e.raster.sum_abs_channel_delta<1||e.raster.max_channel_delta<1)throw new Error('source-derived particle-weight difference was not observable in raw browser pixels');
+          if(e.raster.fbm_rgba_fnv1a32===e.raster.cellular_rgba_fnv1a32)throw new Error('browser raw-pixel checksums unexpectedly match');
+          if(e.browser.network_required!==false||e.authority.weighted_sets!=='DERIVED_REBUILDABLE_VFX_WORKING_SETS'||e.authority.svg_realizations!=='DERIVED_REPLACEABLE_VFX_BODIES'||e.authority.browser_rgba_and_screenshots!=='DERIVED_BROWSER_OUTPUT')throw new Error('browser observer authority boundary drifted');
+          if(!e.truth_boundary.does_not_prove.includes('aesthetically better')||!e.truth_boundary.does_not_prove.includes('cross-browser'))throw new Error('browser truth boundary weakened');
+          console.log('vfx_distance_band_particle_svg_browser_observation=PASS');
+          console.log(`browser=${e.browser.version}`);
+          console.log(`different_pixels=${e.raster.different_pixels}`);
+          console.log(`different_channels=${e.raster.different_channels}`);
+          console.log(`sum_abs_channel_delta=${e.raster.sum_abs_channel_delta}`);
+          console.log(`fbm_rgba_fnv1a32=${e.raster.fbm_rgba_fnv1a32}`);
+          console.log(`cellular_rgba_fnv1a32=${e.raster.cellular_rgba_fnv1a32}`);
+          NODE
+
+      - name: Upload complete distance-band particle SVG browser proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-distance-band-particle-svg-browser-proof
+          path: creative-render/build/vfx-distance-band-particle-svg-browser/
+          if-no-files-found: warn
