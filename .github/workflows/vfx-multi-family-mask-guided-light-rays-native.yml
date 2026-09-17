@@ -1,0 +1,213 @@
+name: vfx-multi-family-mask-guided-light-rays-native
+
+on:
+  pull_request:
+    paths:
+      - 'src/vfx_multi_family_mask_guided_light_rays_native_bridge.mjs'
+      - 'tests/vfx_multi_family_mask_guided_light_rays_native_bridge.test.mjs'
+      - '.github/workflows/vfx-multi-family-mask-guided-light-rays-native.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/vfx_multi_family_mask_guided_light_rays_native_bridge.mjs'
+      - 'tests/vfx_multi_family_mask_guided_light_rays_native_bridge.test.mjs'
+      - '.github/workflows/vfx-multi-family-mask-guided-light-rays-native.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-current-vfx-multi-family-mask-guided-light-rays-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: 27faa67dc8d368a79a0260e47781f390116b3f78
+          path: visual-effect-fabric
+
+      - name: Checkout pinned Render Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Prepare retained attempt evidence
+        run: |
+          base=creative-render/build/vfx-multi-family-mask-guided-light-rays-native
+          mkdir -p "$base"
+          cat > "$base/donor-revisions.json" <<'JSON'
+          {
+            "visual_effect_fabric": "27faa67dc8d368a79a0260e47781f390116b3f78",
+            "render_fabric": "6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b"
+          }
+          JSON
+          cat > "$base/attempt-inputs.json" <<'JSON'
+          {
+            "source_families": ["fbm-value-noise-2d", "cellular-nearest-feature-2d"],
+            "shared_mask": {"threshold":0.5,"softness":0.1,"invert":false},
+            "shared_ray": {"origin":[0.3,0.62],"directionTurns":0.04,"spanTurns":0.3,"maxLength":1.3,"weightPower":1.2},
+            "working_set": {"rays":64,"samples_per_ray":24,"total_samples":1536},
+            "shared_derived_contract": "axm.mask-guided-light-ray-set/v0.1",
+            "observer": "one donor-derived ray becomes one fixed-width two-triangle strip; derived ray weight maps linearly to neutral grayscale 40..240",
+            "consumer_semantics_assigned": false
+          }
+          JSON
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Build retained multi-family ray and native-scene evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { mkdir, writeFile } from 'node:fs/promises';
+          import { observeVisualEffectMaskGuidedLightRayFamiliesNative } from './creative-render/src/vfx_multi_family_mask_guided_light_rays_native_bridge.mjs';
+          const base='creative-render/build/vfx-multi-family-mask-guided-light-rays-native/';
+          await mkdir(base,{recursive:true});
+          const result=await observeVisualEffectMaskGuidedLightRayFamiliesNative('visual-effect-fabric',{vfxRevision:'27faa67dc8d368a79a0260e47781f390116b3f78'});
+          for(const name of ['fbm','cellular']){
+            const row=result.variants[name];
+            await Promise.all([
+              writeFile(base+name+'-request.json',row.requestBytes),
+              writeFile(base+name+'-source.json',row.sourceBytes),
+              writeFile(base+name+'-mask-source.json',row.maskSourceBytes),
+              writeFile(base+name+'-ray-source.json',row.raySourceBytes),
+              writeFile(base+name+'-ray-set.json',row.raySetBytes),
+              writeFile(base+name+'.svg',row.svgBytes),
+              writeFile(base+name+'.axmscene',row.adapted.bytes),
+            ]);
+          }
+          await writeFile(base+'multi-family-rays.receipt.json',JSON.stringify(result.receipt,null,2)+'\n');
+          console.log('vfx_multi_family_mask_guided_light_rays_bridge=PASS');
+          console.log(`fbm_ray_set_hash=${result.variants.fbm.raySet.raySetHash}`);
+          console.log(`cellular_ray_set_hash=${result.variants.cellular.raySet.raySetHash}`);
+          NODE
+
+      - name: Independently assert authority, lineage, shared geometry, budget honesty and source-truth rebuild
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { parseScene } from './creative-render/src/creative_scene_operator.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-multi-family-mask-guided-light-rays-native/';
+          const [receiptBytes,donorBytes,attemptBytes]=await Promise.all([
+            readFile(base+'multi-family-rays.receipt.json'),readFile(base+'donor-revisions.json'),readFile(base+'attempt-inputs.json')
+          ]);
+          const receipt=JSON.parse(receiptBytes.toString('utf8'));
+          const donors=JSON.parse(donorBytes.toString('utf8'));
+          const attempt=JSON.parse(attemptBytes.toString('utf8'));
+          if(donors.visual_effect_fabric!=='27faa67dc8d368a79a0260e47781f390116b3f78'||donors.render_fabric!=='6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b')throw new Error('pinned donor revision evidence drifted');
+          if(receipt.contract!=='AXM_CREATIVE_VFX_MULTI_FAMILY_MASK_GUIDED_LIGHT_RAYS_NATIVE_RECEIPT'||receipt.version!==1)throw new Error('creative receipt contract drifted');
+          if(receipt.donor.revision!==donors.visual_effect_fabric||receipt.donor.graphs.fbm.id!=='fx.light.mask-guided-rays2d-static-svg'||receipt.donor.graphs.cellular.id!=='fx.light.mask-guided-rays2d-static-svg-cellular')throw new Error('current VFX multi-family ray graphs were not exercised');
+          if(receipt.caller_authority.caller_requests_mutated!==false||receipt.caller_authority.human_machine_replay_identical_per_family!==true||receipt.caller_authority.canonical_scalar_sources_remain_authoritative!==true||receipt.caller_authority.coverage_mask_sources_remain_authoritative!==true||receipt.caller_authority.light_ray_sources_remain_authoritative!==true||receipt.caller_authority.ray_sets_are_canonical!==false||receipt.caller_authority.donor_svgs_are_canonical!==false||receipt.caller_authority.native_scenes_are_canonical!==false||receipt.caller_authority.consumer_semantics_assigned!==false)throw new Error('authority boundary failed');
+          if(receipt.shared_request.ray_count!==attempt.working_set.rays||receipt.shared_request.samples_per_ray!==attempt.working_set.samples_per_ray||receipt.shared_request.total_samples!==attempt.working_set.total_samples)throw new Error('shared working-set evidence drifted');
+
+          const retained={};
+          for(const name of ['fbm','cellular']){
+            const [requestBytes,sourceBytes,maskSourceBytes,raySourceBytes,raySetBytes,svgBytes,sceneBytes]=await Promise.all([
+              readFile(base+name+'-request.json'),readFile(base+name+'-source.json'),readFile(base+name+'-mask-source.json'),readFile(base+name+'-ray-source.json'),readFile(base+name+'-ray-set.json'),readFile(base+name+'.svg'),readFile(base+name+'.axmscene')
+            ]);
+            const source=JSON.parse(sourceBytes.toString('utf8'));
+            const maskSource=JSON.parse(maskSourceBytes.toString('utf8'));
+            const raySource=JSON.parse(raySourceBytes.toString('utf8'));
+            const raySet=JSON.parse(raySetBytes.toString('utf8'));
+            const row=receipt.variants[name];
+            if(row.request_sha256!==sha(requestBytes)||row.source.bytes_sha256!==sha(sourceBytes)||row.mask_source.bytes_sha256!==sha(maskSourceBytes)||row.ray_source.bytes_sha256!==sha(raySourceBytes)||row.ray_set.bytes_sha256!==sha(raySetBytes)||row.donor_svg.bytes_sha256!==sha(svgBytes)||row.native_scene.bytes_sha256!==sha(sceneBytes))throw new Error(`retained byte binding drifted for ${name}`);
+            if(raySet.schema!==attempt.shared_derived_contract||raySet.derived!==true||raySet.rebuildable!==true||raySet.raySourceHash!==row.ray_source.hash||raySet.fieldSourceHash!==row.source.hash||raySet.maskSourceHash!==row.mask_source.hash||raySet.raySetHash!==row.ray_set.hash||raySet.rayCount!==64||raySet.samplesPerRay!==24||raySet.rays.length!==64)throw new Error(`ray-set lineage drifted for ${name}`);
+            if(raySource.fieldSourceHash!==row.source.hash||raySource.maskSourceHash!==row.mask_source.hash||maskSource.fieldSourceHash!==row.source.hash)throw new Error(`retained source chain drifted for ${name}`);
+            if((svgBytes.toString('utf8').match(/<line /g)??[]).length!==64)throw new Error(`donor SVG ray cardinality drifted for ${name}`);
+            if(row.working_set_budget.exact_64_rays_1536_samples_matches_roomy!==true||row.working_set_budget.insufficient_63_rays_failed_loudly!==true||row.working_set_budget.insufficient_1535_samples_failed_loudly!==true||!row.working_set_budget.ray_budget_error.includes('64 > 63')||!row.working_set_budget.sample_budget_error.includes('1536 > 1535'))throw new Error(`working-set budget gate failed for ${name}`);
+            if(row.source_truth_rebuild.self_consistent_tamper_rejected!==true||!row.source_truth_rebuild.error.includes('does not rebuild from retained source truth'))throw new Error(`source-truth rebuild gate failed for ${name}`);
+            if(row.native_scene.adapter.input_schema!==raySet.schema||row.native_scene.adapter.ray_set_hash!==raySet.raySetHash||row.native_scene.adapter.source_family_branching!==false||row.native_scene.adapter.consumer_semantics_assigned!==false||row.native_scene.adapter.canonical_source_rewritten!==false||row.native_scene.adapter.derived!==true||row.native_scene.adapter.replaceable!==true)throw new Error(`native observer boundary drifted for ${name}`);
+            const scene=parseScene(sceneBytes.toString('utf8'));
+            if(scene.triangles.length!==128||row.native_scene.triangles!==128)throw new Error(`native ray scene triangle count drifted for ${name}`);
+            retained[name]={source,maskSource,raySource,raySet,scene};
+          }
+          const rayGeometry=set=>set.rays.map(ray=>({start:ray.start,end:ray.end,angleTurns:ray.angleTurns,length:ray.length}));
+          const sceneGeometry=scene=>scene.triangles.map(triangle=>triangle.vertices);
+          const sceneAlbedo=scene=>scene.triangles.map(triangle=>triangle.albedo);
+          if(retained.fbm.source.schema===retained.cellular.source.schema)throw new Error('fixture no longer proves distinct retained source families');
+          if(JSON.stringify(rayGeometry(retained.fbm.raySet))!==JSON.stringify(rayGeometry(retained.cellular.raySet)))throw new Error('source family changed shared derived ray geometry');
+          if(!retained.fbm.raySet.rays.some((ray,index)=>Math.abs(ray.weight-retained.cellular.raySet.rays[index].weight)>0.000001))throw new Error('distinct source families did not change derived ray weights');
+          if(JSON.stringify(sceneGeometry(retained.fbm.scene))!==JSON.stringify(sceneGeometry(retained.cellular.scene)))throw new Error('source family leaked into native geometry');
+          if(JSON.stringify(sceneAlbedo(retained.fbm.scene))===JSON.stringify(sceneAlbedo(retained.cellular.scene)))throw new Error('derived ray weight difference did not reach native albedo');
+          if(receipt.comparison.source_hashes_differ!==true||receipt.comparison.mask_source_hashes_differ!==true||receipt.comparison.ray_source_hashes_differ!==true||receipt.comparison.ray_set_hashes_differ!==true||receipt.comparison.derived_ray_geometry_identical!==true||receipt.comparison.derived_ray_weights_differ!==true||receipt.comparison.native_geometry_identical!==true||receipt.comparison.native_albedo_differs!==true)throw new Error('multi-family comparison evidence drifted');
+          if(receipt.replaceability.same_downstream_ray_hands_accept_both_source_families!==true||receipt.replaceability.same_generic_derived_ray_contract_feeds_one_native_observer!==true||receipt.replaceability.donor_svg_and_native_scene_are_independent_replaceable_observation_bodies!==true||receipt.replaceability.observer_does_not_rewrite_donor_source_or_ray_truth!==true)throw new Error('replaceability boundary drifted');
+          const evidence={contract:'AXM_CREATIVE_VFX_MULTI_FAMILY_MASK_GUIDED_LIGHT_RAYS_INDEPENDENT_EVIDENCE',version:1,creative_receipt_sha256:sha(receiptBytes),donor_revisions:donors,source_schemas:{fbm:retained.fbm.source.schema,cellular:retained.cellular.source.schema},ray_set_schema:attempt.shared_derived_contract,ray_set_hashes:{fbm:retained.fbm.raySet.raySetHash,cellular:retained.cellular.raySet.raySetHash},gates:{canonical_source_authority:'PASS',caller_neutral_repeat:'PASS',same_downstream_ray_hands:'PASS',shared_derived_ray_contract:'PASS',shared_ray_geometry:'PASS',source_family_weight_difference:'PASS',sufficient_budgets_noncreative:'PASS',insufficient_budgets_fail_loudly:'PASS',source_truth_rebuild_rejects_tamper:'PASS',source_family_neutral_native_adapter:'PASS',native_geometry_constant:'PASS',consumer_semantics_not_assigned:'PASS'}};
+          await writeFile(base+'independent-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_multi_family_mask_guided_light_rays_independent_evidence=PASS');
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify both source-family ray observations
+        run: |
+          base=creative-render/build/vfx-multi-family-mask-guided-light-rays-native
+          for name in fbm cellular; do
+            cat > "$base/$name.axmrender" <<EOF_REQUEST
+          AXM_RENDER_REQUEST 1
+          scene $name.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output $name.ppm
+          EOF_REQUEST
+            render-fabric/build/axm-render --request "$base/$name.axmrender" --receipt "$base/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$base/$name.axmrender" "$base/$name.axmreceipt"
+          done
+
+      - name: Bind shared ray geometry and weight difference to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-multi-family-mask-guided-light-rays-native/';
+          const receiptBytes=await readFile(base+'multi-family-rays.receipt.json');
+          const receipt=JSON.parse(receiptBytes.toString('utf8'));
+          const renders={};
+          for(const name of ['fbm','cellular']){
+            const [scene,request,renderReceipt,frame]=await Promise.all([
+              readFile(base+name+'.axmscene'),readFile(base+name+'.axmrender'),readFile(base+name+'.axmreceipt'),readFile(base+name+'.ppm')
+            ]);
+            renders[name]={scene_sha256:sha(scene),request_sha256:sha(request),receipt_sha256:sha(renderReceipt),frame_sha256:sha(frame),frame_bytes:frame.length};
+            if(receipt.variants[name].native_scene.bytes_sha256!==renders[name].scene_sha256)throw new Error(`scene identity changed before native rendering: ${name}`);
+          }
+          if(renders.fbm.frame_sha256===renders.cellular.frame_sha256)throw new Error('distinct coverage-guided ray weights did not reach distinct native frame bytes');
+          const evidence={contract:'AXM_CREATIVE_VFX_MULTI_FAMILY_MASK_GUIDED_LIGHT_RAYS_NATIVE_EVIDENCE',version:1,creative_receipt_sha256:sha(receiptBytes),donor_revisions:{visual_effect_fabric:'27faa67dc8d368a79a0260e47781f390116b3f78',render_fabric:'6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b'},shared_request:receipt.shared_request,comparison:receipt.comparison,renders,render_receipt_replay:{fbm:'PASS',cellular:'PASS'},authority:receipt.caller_authority,truth_boundary:receipt.truth_boundary};
+          await writeFile(base+'native-render-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_multi_family_mask_guided_light_rays_native_render=PASS');
+          console.log(`fbm_frame_sha256=${renders.fbm.frame_sha256}`);
+          console.log(`cellular_frame_sha256=${renders.cellular.frame_sha256}`);
+          NODE
+
+      - name: Upload retained multi-family mask-guided light-ray proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-multi-family-mask-guided-light-rays-native-proof
+          path: creative-render/build/vfx-multi-family-mask-guided-light-rays-native
+          if-no-files-found: warn
