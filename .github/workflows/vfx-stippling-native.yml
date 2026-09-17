@@ -1,0 +1,210 @@
+name: vfx-stippling-native
+
+on:
+  pull_request:
+    paths:
+      - 'src/vfx_stippling_native_bridge.mjs'
+      - 'src/vfx_stippling_native_cli.mjs'
+      - 'tests/vfx_stippling_native_bridge.test.mjs'
+      - '.github/workflows/vfx-stippling-native.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/vfx_stippling_native_bridge.mjs'
+      - 'src/vfx_stippling_native_cli.mjs'
+      - 'tests/vfx_stippling_native_bridge.test.mjs'
+      - '.github/workflows/vfx-stippling-native.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-current-vfx-stippling-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: 11c696f23b1283f8435e631acf0e0628fedc5fda
+          path: visual-effect-fabric
+
+      - name: Checkout pinned Render Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Prepare retained attempt evidence
+        run: |
+          base=creative-render/build/vfx-stippling-native
+          mkdir -p "$base"
+          cat > "$base/donor-revisions.json" <<'EOF'
+          {
+            "visual_effect_fabric": "11c696f23b1283f8435e631acf0e0628fedc5fda",
+            "render_fabric": "6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b"
+          }
+          EOF
+          cat > "$base/attempt-inputs.json" <<'EOF'
+          {
+            "explicit_choice": "stipplingRequest.valueMode",
+            "variants": ["normal", "invert"],
+            "field": {"seed":2468,"frequency":3.25,"octaves":4,"lacunarity":2,"gain":0.5,"offset":[0,0]},
+            "treatment": {"patternSeed":13579,"minDensity":0.04,"maxDensity":0.96,"responsePower":1,"jitterCell":0.42,"radiusCell":0.12},
+            "derived_working_set": {"columns":40,"rows":28,"candidatesPerCell":2,"candidateCount":2240}
+          }
+          EOF
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Build retained stippling sources, point sets, SVGs and native scenes
+        run: |
+          base=creative-render/build/vfx-stippling-native
+          node creative-render/src/vfx_stippling_native_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --vfx-revision 11c696f23b1283f8435e631acf0e0628fedc5fda \
+            --normal-field-source "$base/normal-field-source.json" \
+            --invert-field-source "$base/invert-field-source.json" \
+            --normal-stippling-source "$base/normal-stippling-source.json" \
+            --invert-stippling-source "$base/invert-stippling-source.json" \
+            --normal-point-set "$base/normal-point-set.json" \
+            --invert-point-set "$base/invert-point-set.json" \
+            --normal-svg "$base/normal.svg" \
+            --invert-svg "$base/invert.svg" \
+            --normal-state "$base/normal-state.json" \
+            --invert-state "$base/invert-state.json" \
+            --normal-scene "$base/normal.axmscene" \
+            --invert-scene "$base/invert.axmscene" \
+            --receipt "$base/stippling.receipt.json"
+
+      - name: Independently assert source authority, seeded point lineage and budget honesty
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { parseScene } from './creative-render/src/creative_scene_operator.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-stippling-native/';
+          const [receiptBytes,donorBytes,attemptBytes]=await Promise.all([
+            readFile(base+'stippling.receipt.json'),readFile(base+'donor-revisions.json'),readFile(base+'attempt-inputs.json')
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          const donors=JSON.parse(donorBytes.toString('utf8'));
+          const attempt=JSON.parse(attemptBytes.toString('utf8'));
+          if(donors.visual_effect_fabric!=='11c696f23b1283f8435e631acf0e0628fedc5fda'||donors.render_fabric!=='6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b')throw new Error('pinned donor revision evidence drifted');
+          if(r.contract!=='AXM_CREATIVE_VFX_STIPPLING_NATIVE_RECEIPT'||r.version!==1)throw new Error('stippling receipt contract drifted');
+          if(r.donor.revision!==donors.visual_effect_fabric||r.donor.graph_id!=='fx.stylize.field-stippling2d-static-svg'||r.donor.graph_version!=='0.1.0')throw new Error('current VFX stippling graph was not exercised');
+          const hands=['fx.field.fbm-source-normalize','fx.stylize.stippling2d-source-normalize','fx.stylize.stippling2d-point-set-build','fx.stylize.stippling2d-static-svg-realize'];
+          if(JSON.stringify(r.donor.hand_ids)!==JSON.stringify(hands))throw new Error('VFX stippling Hand boundary drifted');
+          if(r.caller_authority.explicit_choice!=='stipplingRequest.valueMode'||r.caller_authority.scalar_field_source_held_exactly_constant!==true||r.caller_authority.other_treatment_fields_held_constant!==true||r.caller_authority.caller_requests_mutated!==false||r.caller_authority.canonical_field_source_remains_authoritative!==true||r.caller_authority.canonical_stippling_source_remains_authoritative!==true||r.caller_authority.point_sets_are_canonical!==false||r.caller_authority.donor_svg_is_canonical!==false||r.caller_authority.native_scene_is_canonical!==false||r.caller_authority.consumer_semantics_assigned!==false)throw new Error('stippling authority boundary failed');
+          if(attempt.explicit_choice!==r.caller_authority.explicit_choice||attempt.derived_working_set.candidateCount!==2240)throw new Error('attempt input evidence drifted');
+
+          const rows={};
+          for(const name of ['normal','invert']){
+            const [fieldSourceBytes,treatmentSourceBytes,pointSetBytes,svgBytes,sceneBytes]=await Promise.all([
+              readFile(base+name+'-field-source.json'),readFile(base+name+'-stippling-source.json'),readFile(base+name+'-point-set.json'),readFile(base+name+'.svg'),readFile(base+name+'.axmscene')
+            ]);
+            const fieldSource=JSON.parse(fieldSourceBytes.toString('utf8'));
+            const treatmentSource=JSON.parse(treatmentSourceBytes.toString('utf8'));
+            const pointSet=JSON.parse(pointSetBytes.toString('utf8'));
+            const row=r.variants[name];
+            if(row.field_source.bytes_sha256!==sha(fieldSourceBytes)||row.stippling_source.bytes_sha256!==sha(treatmentSourceBytes)||row.point_set.bytes_sha256!==sha(pointSetBytes)||row.donor_svg.bytes_sha256!==sha(svgBytes)||row.native_scene.bytes_sha256!==sha(sceneBytes))throw new Error(`retained byte binding drifted for ${name}`);
+            if(treatmentSource.fieldSourceHash!==row.field_source.hash||pointSet.fieldSourceHash!==row.field_source.hash||pointSet.sourceHash!==row.stippling_source.hash)throw new Error(`stippling lineage drifted for ${name}`);
+            if(pointSet.columns!==40||pointSet.rows!==28||pointSet.candidatesPerCell!==2||pointSet.candidateCount!==2240||pointSet.pointCount<1||pointSet.derived!==true||pointSet.rebuildable!==true)throw new Error(`bounded stippling point-set contract drifted for ${name}`);
+            if(row.working_set_budget.exact_2240_matches_roomy_16384!==true||row.working_set_budget.insufficient_2239_failed_loudly!==true||!row.working_set_budget.insufficient_2239_error.includes('stippling candidate budget exceeded'))throw new Error(`working-set budget truth gate failed for ${name}`);
+            if(row.donor_svg.field_source_hash!==row.field_source.hash||row.donor_svg.stippling_source_hash!==row.stippling_source.hash||row.donor_svg.point_set_hash!==row.point_set.hash||row.donor_svg.derived!==true||row.donor_svg.replaceable!==true)throw new Error(`donor SVG lineage drifted for ${name}`);
+            if(row.native_scene.adapter.field_source_hash!==row.field_source.hash||row.native_scene.adapter.stippling_source_hash!==row.stippling_source.hash||row.native_scene.adapter.point_set_hash!==row.point_set.hash||row.native_scene.adapter.positions_and_constant_radius_only!==true||row.native_scene.adapter.style_is_fixed!==true||row.native_scene.adapter.consumer_semantics_assigned!==false)throw new Error(`native adapter truth boundary drifted for ${name}`);
+            const seen=new Set();
+            let previous=-1;
+            for(let i=0;i<pointSet.points.length;i+=1){const p=pointSet.points[i];if(p.index!==i||!Number.isInteger(p.candidateIndex)||p.candidateIndex<=previous||p.candidateIndex>=2240||seen.has(p.candidateIndex))throw new Error(`accepted candidate identity drifted for ${name} at ${i}`);seen.add(p.candidateIndex);previous=p.candidateIndex;}
+            const scene=parseScene(sceneBytes.toString('utf8'));
+            if(scene.triangles.length!==pointSet.pointCount*2)throw new Error(`native stippling scene triangle count drifted for ${name}`);
+            if(scene.triangles.some(t=>JSON.stringify(t.albedo)!==JSON.stringify([238,238,238])))throw new Error(`fixed native stippling style drifted for ${name}`);
+            rows[name]={fieldSource,treatmentSource,pointSet,seen};
+          }
+          if(r.variants.normal.field_source.hash!==r.variants.invert.field_source.hash)throw new Error('valueMode choice rewrote canonical scalar-field identity');
+          const stripMode=source=>{const copy=structuredClone(source);delete copy.valueMode;return copy;};
+          if(JSON.stringify(stripMode(rows.normal.treatmentSource))!==JSON.stringify(stripMode(rows.invert.treatmentSource)))throw new Error('retained treatment fields beyond valueMode changed');
+          if(rows.normal.treatmentSource.valueMode!=='normal'||rows.invert.treatmentSource.valueMode!=='invert')throw new Error('explicit normal/invert treatment choice collapsed');
+          const normalCandidates=[...rows.normal.seen];
+          const invertCandidates=[...rows.invert.seen];
+          if(JSON.stringify(normalCandidates)===JSON.stringify(invertCandidates))throw new Error('explicit treatment choice did not change accepted candidate geography');
+          if(r.comparison.candidate_universe_count!==2240||r.comparison.accepted_candidate_geography_differs!==true||r.comparison.native_scene_bytes_differ!==true||r.comparison.fixed_native_style!==true)throw new Error('stippling comparison evidence drifted');
+          if(r.replaceability.same_derived_point_set_can_feed_donor_svg_and_native_scene_realizations!==true||r.replaceability.donor_svg_and_native_scene_do_not_rewrite_field_or_treatment_truth!==true)throw new Error('replaceability boundary drifted');
+          const evidence={contract:'AXM_CREATIVE_VFX_STIPPLING_INDEPENDENT_EVIDENCE',version:1,creative_receipt_sha256:sha(receiptBytes),donor_revisions:donors,accepted_point_counts:{normal:rows.normal.pointSet.pointCount,invert:rows.invert.pointSet.pointCount},gates:{caller_source_authority:'PASS',caller_neutral_repeat:'PASS',scalar_field_exactly_retained:'PASS',seeded_candidate_identity:'PASS',sufficient_budget_noncreative:'PASS',insufficient_budget_fails_loudly:'PASS',derived_point_lineage:'PASS',replaceable_svg_and_native_realizations:'PASS',fixed_native_style:'PASS',consumer_semantics_not_assigned:'PASS'}};
+          await writeFile(base+'independent-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_stippling_independent_evidence=PASS');
+          console.log(`normal_point_count=${rows.normal.pointSet.pointCount}`);
+          console.log(`invert_point_count=${rows.invert.pointSet.pointCount}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify both stippling observations
+        run: |
+          base=creative-render/build/vfx-stippling-native
+          for name in normal invert; do
+            cat > "$base/$name.axmrender" <<EOF
+          AXM_RENDER_REQUEST 1
+          scene $name.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output $name.ppm
+          EOF
+            render-fabric/build/axm-render --request "$base/$name.axmrender" --receipt "$base/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$base/$name.axmrender" "$base/$name.axmreceipt"
+          done
+
+      - name: Bind derived stippling point sets to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-stippling-native/';
+          const receiptBytes=await readFile(base+'stippling.receipt.json');
+          const receipt=JSON.parse(receiptBytes.toString('utf8'));
+          const renders={};
+          for(const name of ['normal','invert']){
+            const [scene,request,renderReceipt,frame]=await Promise.all([readFile(base+name+'.axmscene'),readFile(base+name+'.axmrender'),readFile(base+name+'.axmreceipt'),readFile(base+name+'.ppm')]);
+            renders[name]={scene_sha256:sha(scene),request_sha256:sha(request),receipt_sha256:sha(renderReceipt),frame_sha256:sha(frame),frame_bytes:frame.length};
+            if(receipt.variants[name].native_scene.bytes_sha256!==renders[name].scene_sha256)throw new Error(`scene identity changed before native rendering: ${name}`);
+          }
+          if(renders.normal.frame_sha256===renders.invert.frame_sha256)throw new Error('explicit normal/invert stippling choice did not reach distinct native frame bytes');
+          const evidence={contract:'AXM_CREATIVE_VFX_STIPPLING_NATIVE_EVIDENCE',version:1,creative_receipt_sha256:sha(receiptBytes),donor_revisions:{visual_effect_fabric:'11c696f23b1283f8435e631acf0e0628fedc5fda',render_fabric:'6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b'},field_source_hash:receipt.variants.normal.field_source.hash,stippling_source_hashes:{normal:receipt.variants.normal.stippling_source.hash,invert:receipt.variants.invert.stippling_source.hash},point_set_hashes:{normal:receipt.variants.normal.point_set.hash,invert:receipt.variants.invert.point_set.hash},accepted_point_counts:receipt.comparison.accepted_point_counts,renders,render_receipt_replay:{normal:'PASS',invert:'PASS'},authority:receipt.authority,truth_boundary:receipt.truth_boundary};
+          await writeFile(base+'native-render-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_stippling_native_render=PASS');
+          console.log(`normal_frame_sha256=${renders.normal.frame_sha256}`);
+          console.log(`invert_frame_sha256=${renders.invert.frame_sha256}`);
+          NODE
+
+      - name: Upload retained VFX stippling native proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-stippling-native-proof
+          path: creative-render/build/vfx-stippling-native/
+          if-no-files-found: warn
