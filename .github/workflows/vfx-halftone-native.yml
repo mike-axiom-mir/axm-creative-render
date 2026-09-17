@@ -1,0 +1,234 @@
+name: vfx-halftone-native
+
+on:
+  pull_request:
+    paths:
+      - 'src/vfx_halftone_native_bridge.mjs'
+      - 'src/vfx_halftone_native_cli.mjs'
+      - 'tests/vfx_halftone_native_bridge.test.mjs'
+      - '.github/workflows/vfx-halftone-native.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/vfx_halftone_native_bridge.mjs'
+      - 'src/vfx_halftone_native_cli.mjs'
+      - 'tests/vfx_halftone_native_bridge.test.mjs'
+      - '.github/workflows/vfx-halftone-native.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-current-vfx-halftone-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: 21a55a3c795aa15c7d7371f7290f63479ea50a9c
+          path: visual-effect-fabric
+
+      - name: Checkout pinned Render Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Prepare retained attempt evidence
+        run: |
+          base=creative-render/build/vfx-halftone-native
+          mkdir -p "$base"
+          cat > "$base/donor-revisions.json" <<'EOF'
+          {
+            "visual_effect_fabric": "21a55a3c795aa15c7d7371f7290f63479ea50a9c",
+            "render_fabric": "6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b"
+          }
+          EOF
+          cat > "$base/attempt-inputs.json" <<'EOF'
+          {
+            "explicit_choice": "halftoneRequest.valueMode",
+            "variants": ["normal", "invert"],
+            "field": {
+              "seed": 20260917,
+              "frequency": 2.75,
+              "octaves": 4,
+              "lacunarity": 2,
+              "gain": 0.52,
+              "offset": [0.07, -0.11]
+            },
+            "treatment": {
+              "minRadiusCell": 0.08,
+              "maxRadiusCell": 0.44,
+              "responsePower": 1.25
+            },
+            "derived_grid": {"columns": 48, "rows": 32, "dotCount": 1536}
+          }
+          EOF
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Build retained halftone sources, dot sets, SVGs and native scenes
+        run: |
+          base=creative-render/build/vfx-halftone-native
+          node creative-render/src/vfx_halftone_native_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --vfx-revision 21a55a3c795aa15c7d7371f7290f63479ea50a9c \
+            --normal-field-source "$base/normal-field-source.json" \
+            --invert-field-source "$base/invert-field-source.json" \
+            --normal-halftone-source "$base/normal-halftone-source.json" \
+            --invert-halftone-source "$base/invert-halftone-source.json" \
+            --normal-dot-set "$base/normal-dot-set.json" \
+            --invert-dot-set "$base/invert-dot-set.json" \
+            --normal-svg "$base/normal.svg" \
+            --invert-svg "$base/invert.svg" \
+            --normal-state "$base/normal-state.json" \
+            --invert-state "$base/invert-state.json" \
+            --normal-scene "$base/normal.axmscene" \
+            --invert-scene "$base/invert.axmscene" \
+            --receipt "$base/halftone.receipt.json"
+
+      - name: Independently assert source authority, budget honesty and replaceable realizations
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { parseScene } from './creative-render/src/creative_scene_operator.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-halftone-native/';
+          const [receiptBytes, donorBytes, attemptBytes] = await Promise.all([
+            readFile(base+'halftone.receipt.json'), readFile(base+'donor-revisions.json'), readFile(base+'attempt-inputs.json')
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          const donors=JSON.parse(donorBytes.toString('utf8'));
+          const attempt=JSON.parse(attemptBytes.toString('utf8'));
+          if(donors.visual_effect_fabric!=='21a55a3c795aa15c7d7371f7290f63479ea50a9c'||donors.render_fabric!=='6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b')throw new Error('pinned donor revision evidence drifted');
+          if(r.contract!=='AXM_CREATIVE_VFX_HALFTONE_NATIVE_RECEIPT'||r.version!==1)throw new Error('halftone receipt contract drifted');
+          if(r.donor.revision!==donors.visual_effect_fabric||r.donor.graph_id!=='fx.stylize.halftone-field2d-static-svg'||r.donor.graph_version!=='0.1.0')throw new Error('current VFX halftone graph was not exercised');
+          const hands=['fx.field.fbm-source-normalize','fx.stylize.halftone2d-source-normalize','fx.stylize.halftone2d-dot-set-build','fx.stylize.halftone2d-static-svg-realize'];
+          if(JSON.stringify(r.donor.hand_ids)!==JSON.stringify(hands))throw new Error('VFX halftone Hand boundary drifted');
+          if(r.caller_authority.explicit_choice!=='halftoneRequest.valueMode'||r.caller_authority.scalar_field_source_held_exactly_constant!==true||r.caller_authority.other_treatment_fields_held_constant!==true||r.caller_authority.caller_requests_mutated!==false||r.caller_authority.canonical_field_source_remains_authoritative!==true||r.caller_authority.canonical_halftone_source_remains_authoritative!==true||r.caller_authority.dot_sets_are_canonical!==false||r.caller_authority.donor_svg_is_canonical!==false||r.caller_authority.native_scene_is_canonical!==false||r.caller_authority.consumer_semantics_assigned!==false)throw new Error('halftone authority boundary failed');
+          if(attempt.explicit_choice!==r.caller_authority.explicit_choice||attempt.derived_grid.dotCount!==1536)throw new Error('attempt input evidence drifted');
+
+          const scenes={};
+          const sources={};
+          const dotSets={};
+          let independentRadiusDifferences=0;
+          for(const name of ['normal','invert']){
+            const [fieldSourceBytes,treatmentSourceBytes,dotSetBytes,svgBytes,sceneBytes]=await Promise.all([
+              readFile(base+name+'-field-source.json'),readFile(base+name+'-halftone-source.json'),readFile(base+name+'-dot-set.json'),readFile(base+name+'.svg'),readFile(base+name+'.axmscene')
+            ]);
+            const fieldSource=JSON.parse(fieldSourceBytes.toString('utf8'));
+            const treatmentSource=JSON.parse(treatmentSourceBytes.toString('utf8'));
+            const dotSet=JSON.parse(dotSetBytes.toString('utf8'));
+            const row=r.variants[name];
+            if(row.field_source.bytes_sha256!==sha(fieldSourceBytes)||row.halftone_source.bytes_sha256!==sha(treatmentSourceBytes)||row.dot_set.bytes_sha256!==sha(dotSetBytes)||row.donor_svg.bytes_sha256!==sha(svgBytes)||row.native_scene.bytes_sha256!==sha(sceneBytes))throw new Error(`retained byte binding drifted for ${name}`);
+            if(treatmentSource.fieldSourceHash!==row.field_source.hash||dotSet.fieldSourceHash!==row.field_source.hash||dotSet.sourceHash!==row.halftone_source.hash)throw new Error(`halftone lineage drifted for ${name}`);
+            if(dotSet.columns!==48||dotSet.rows!==32||dotSet.dotCount!==1536||dotSet.derived!==true||dotSet.rebuildable!==true)throw new Error(`bounded halftone dot-set contract drifted for ${name}`);
+            if(row.working_set_budget.exact_1536_matches_roomy_16384!==true||row.working_set_budget.insufficient_1535_failed_loudly!==true||!row.working_set_budget.insufficient_1535_error.includes('halftone dot budget exceeded'))throw new Error(`working-set budget truth gate failed for ${name}`);
+            if(row.donor_svg.field_source_hash!==row.field_source.hash||row.donor_svg.halftone_source_hash!==row.halftone_source.hash||row.donor_svg.dot_set_hash!==row.dot_set.hash||row.donor_svg.derived!==true||row.donor_svg.replaceable!==true)throw new Error(`donor SVG lineage drifted for ${name}`);
+            if(row.native_scene.adapter.field_source_hash!==row.field_source.hash||row.native_scene.adapter.halftone_source_hash!==row.halftone_source.hash||row.native_scene.adapter.dot_set_hash!==row.dot_set.hash||row.native_scene.adapter.centers_and_radius_only!==true||row.native_scene.adapter.style_is_fixed!==true||row.native_scene.adapter.consumer_semantics_assigned!==false)throw new Error(`native adapter truth boundary drifted for ${name}`);
+            const scene=parseScene(sceneBytes.toString('utf8'));
+            if(scene.triangles.length!==3072)throw new Error(`native halftone scene triangle count drifted for ${name}`);
+            scenes[name]=scene;
+            sources[name]={fieldSource,treatmentSource};
+            dotSets[name]=dotSet;
+          }
+          if(r.variants.normal.field_source.hash!==r.variants.invert.field_source.hash)throw new Error('valueMode choice rewrote canonical scalar-field identity');
+          const stripMode=source=>{const copy=structuredClone(source);delete copy.valueMode;return copy;};
+          if(JSON.stringify(stripMode(sources.normal.treatmentSource))!==JSON.stringify(stripMode(sources.invert.treatmentSource)))throw new Error('retained treatment fields beyond valueMode changed');
+          if(sources.normal.treatmentSource.valueMode!=='normal'||sources.invert.treatmentSource.valueMode!=='invert')throw new Error('explicit normal/invert treatment choice collapsed');
+          for(let i=0;i<dotSets.normal.dotCount;i+=1){
+            const a=dotSets.normal.dots[i], b=dotSets.invert.dots[i];
+            if(a.index!==b.index||a.column!==b.column||a.row!==b.row||JSON.stringify(a.center)!==JSON.stringify(b.center)||a.fieldValue!==b.fieldValue)throw new Error(`sampling identity changed at dot ${i}`);
+            if(a.radiusCell!==b.radiusCell) independentRadiusDifferences+=1;
+          }
+          if(independentRadiusDifferences!==r.comparison.radius_difference_count||independentRadiusDifferences<1)throw new Error('derived radius difference evidence drifted');
+          const normalAlbedo=JSON.stringify(scenes.normal.triangles.map(t=>t.albedo));
+          const invertAlbedo=JSON.stringify(scenes.invert.triangles.map(t=>t.albedo));
+          if(normalAlbedo!==invertAlbedo)throw new Error('fixed native realization style drifted between treatment choices');
+          const normalGeometry=JSON.stringify(scenes.normal.triangles.map(t=>t.vertices));
+          const invertGeometry=JSON.stringify(scenes.invert.triangles.map(t=>t.vertices));
+          if(normalGeometry===invertGeometry)throw new Error('distinct derived radii did not change native geometry');
+          if(r.replaceability.same_derived_dot_set_can_feed_donor_svg_and_native_scene_realizations!==true||r.replaceability.donor_svg_and_native_scene_do_not_rewrite_field_or_treatment_truth!==true)throw new Error('replaceability boundary drifted');
+          const evidence={contract:'AXM_CREATIVE_VFX_HALFTONE_INDEPENDENT_EVIDENCE',version:1,creative_receipt_sha256:sha(receiptBytes),donor_revisions:donors,radius_difference_count:independentRadiusDifferences,gates:{caller_source_authority:'PASS',caller_neutral_repeat:'PASS',scalar_field_exactly_retained:'PASS',sufficient_budget_noncreative:'PASS',insufficient_budget_fails_loudly:'PASS',derived_dot_lineage:'PASS',replaceable_svg_and_native_realizations:'PASS',fixed_native_style:'PASS',consumer_semantics_not_assigned:'PASS'}};
+          await writeFile(base+'independent-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_halftone_independent_evidence=PASS');
+          console.log(`field_source_hash=${r.variants.normal.field_source.hash}`);
+          console.log(`normal_halftone_source_hash=${r.variants.normal.halftone_source.hash}`);
+          console.log(`invert_halftone_source_hash=${r.variants.invert.halftone_source.hash}`);
+          console.log(`radius_difference_count=${independentRadiusDifferences}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify both halftone observations
+        run: |
+          base=creative-render/build/vfx-halftone-native
+          for name in normal invert; do
+            cat > "$base/$name.axmrender" <<EOF
+          AXM_RENDER_REQUEST 1
+          scene $name.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output $name.ppm
+          EOF
+            render-fabric/build/axm-render --request "$base/$name.axmrender" --receipt "$base/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$base/$name.axmrender" "$base/$name.axmreceipt"
+          done
+
+      - name: Bind derived halftone dot sets to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-halftone-native/';
+          const receiptBytes=await readFile(base+'halftone.receipt.json');
+          const receipt=JSON.parse(receiptBytes.toString('utf8'));
+          const renders={};
+          for(const name of ['normal','invert']){
+            const [scene,request,renderReceipt,frame]=await Promise.all([
+              readFile(base+name+'.axmscene'),readFile(base+name+'.axmrender'),readFile(base+name+'.axmreceipt'),readFile(base+name+'.ppm')
+            ]);
+            renders[name]={scene_sha256:sha(scene),request_sha256:sha(request),receipt_sha256:sha(renderReceipt),frame_sha256:sha(frame),frame_bytes:frame.length};
+            if(receipt.variants[name].native_scene.bytes_sha256!==renders[name].scene_sha256)throw new Error(`scene identity changed before native rendering: ${name}`);
+          }
+          if(renders.normal.frame_sha256===renders.invert.frame_sha256)throw new Error('explicit normal/invert treatment choice did not reach distinct native frame bytes');
+          const evidence={contract:'AXM_CREATIVE_VFX_HALFTONE_NATIVE_EVIDENCE',version:1,creative_receipt_sha256:sha(receiptBytes),donor_revisions:{visual_effect_fabric:'21a55a3c795aa15c7d7371f7290f63479ea50a9c',render_fabric:'6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b'},field_source_hash:receipt.variants.normal.field_source.hash,halftone_source_hashes:{normal:receipt.variants.normal.halftone_source.hash,invert:receipt.variants.invert.halftone_source.hash},dot_set_hashes:{normal:receipt.variants.normal.dot_set.hash,invert:receipt.variants.invert.dot_set.hash},radius_difference_count:receipt.comparison.radius_difference_count,renders,render_receipt_replay:{normal:'PASS',invert:'PASS'},authority:receipt.authority,truth_boundary:receipt.truth_boundary};
+          await writeFile(base+'native-render-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_halftone_native_render=PASS');
+          console.log(`normal_frame_sha256=${renders.normal.frame_sha256}`);
+          console.log(`invert_frame_sha256=${renders.invert.frame_sha256}`);
+          NODE
+
+      - name: Upload retained VFX halftone native proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-halftone-native-proof
+          path: creative-render/build/vfx-halftone-native/
+          if-no-files-found: warn
