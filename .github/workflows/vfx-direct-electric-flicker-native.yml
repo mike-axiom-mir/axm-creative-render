@@ -1,0 +1,205 @@
+name: vfx-direct-electric-flicker-native
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vfx-direct-electric-flicker-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-vfx-direct-electric-flicker-native:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: 6dff86ea04a8974bc1613bd9e6abe4fead4c654f
+          path: visual-effect-fabric
+
+      - name: Checkout pinned current Render Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Retain attempt identity before gates
+        run: |
+          mkdir -p creative-render/build/vfx-direct-electric-flicker
+          cat > creative-render/build/vfx-direct-electric-flicker/attempt.json <<EOF
+          {
+            "creative_render_head": "${GITHUB_SHA}",
+            "visual_effect_fabric_revision": "6dff86ea04a8974bc1613bd9e6abe4fead4c654f",
+            "render_fabric_revision": "6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b",
+            "lane": "vfx-direct-electric-flicker-native"
+          }
+          EOF
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run pinned current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Execute current donor electric flicker graph into native scenes
+        run: |
+          root=creative-render/build/vfx-direct-electric-flicker
+          node creative-render/src/vfx_direct_electric_flicker_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --phase-a-scene "$root/phase-a.axmscene" \
+            --phase-b-scene "$root/phase-b.axmscene" \
+            --donor-state "$root/donor-state.json" \
+            --receipt "$root/direct-electric-flicker.receipt.json"
+
+      - name: Assert donor-owned lineage, no-op controls, loop closure, and tamper rejection
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { pathToFileURL } from 'node:url';
+          import { resolve } from 'node:path';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-direct-electric-flicker/';
+          const [receiptBytes,stateBytes,sceneA,sceneB]=await Promise.all([
+            readFile(root+'direct-electric-flicker.receipt.json'),readFile(root+'donor-state.json'),readFile(root+'phase-a.axmscene'),readFile(root+'phase-b.axmscene'),
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          const state=JSON.parse(stateBytes.toString('utf8'));
+          if(r.contract!=='AXM_CREATIVE_VFX_DIRECT_ELECTRIC_FLICKER_NATIVE_RECEIPT'||r.version!==1)throw new Error('direct electric flicker receipt drifted');
+          const v=r.visual_effect_fabric;
+          if(v.donor_graph_reused!==true||v.graph_id!=='fx.electric-storm.flicker-cycle-modulation'||v.graph_version!=='0.1.0')throw new Error('current direct VFX electric flicker graph not exercised');
+          for(const id of ['fx.electric.energy-profile','fx.animation.flicker-cycle1d-source-normalize','fx.electric.flicker-modulation-source-normalize','fx.electric.flicker-cycle-modulate']){
+            if(!v.donor_hand_ids.includes(id))throw new Error(`missing donor Hand ${id}`);
+          }
+          if(v.caller_neutral_replay!=='PASS')throw new Error('direct electric flicker caller-neutral replay failed');
+          if(v.retained.flicker_source_schema!=='axm.flicker-cycle-source/v0.1'||v.retained.flicker_algorithm!=='periodic-slot-noise1d/v0.1')throw new Error('retained flicker source semantics drifted');
+          if(v.retained.modulation_source_schema!=='axm.electric-flicker-modulation-source/v0.1'||v.retained.modulation_mode!=='path-energy'||v.retained.modulation_mapping!=='normalize-flicker-source-range')throw new Error('retained electric flicker binding semantics drifted');
+          for(const key of ['donor_rebuild_validation','whole_cycle_identity_replay','same_retained_sources_between_phases','same_renderer_layout_between_phases','same_non_energy_path_state_between_phases','factor_changes_between_phases','constant_range_exact_no_op','zero_strength_exact_no_op','self_consistent_derived_tamper_rejected']){
+            if(v.invariants[key]!==true)throw new Error(`direct electric flicker invariant failed: ${key}`);
+          }
+          if(r.derived_sets.phase_a.schema!=='axm.electric-flicker-modulated-path-set/v0.1'||r.derived_sets.phase_a.derived!==true||r.derived_sets.phase_a.rebuildable!==true)throw new Error('phase A derived authority drifted');
+          if(r.derived_sets.phase_b.schema!=='axm.electric-flicker-modulated-path-set/v0.1'||r.derived_sets.phase_b.derived!==true||r.derived_sets.phase_b.rebuildable!==true)throw new Error('phase B derived authority drifted');
+          if(r.derived_sets.phase_a.factor===r.derived_sets.phase_b.factor||r.derived_sets.phase_a.modulated_set_hash===r.derived_sets.phase_b.modulated_set_hash)throw new Error('explicit donor phases did not produce distinct derived sets');
+          if(r.native_observer.same_geometry_layout!==true||r.native_observer.same_triangle_count!==true||r.native_observer.scene_bytes_differ!==true)throw new Error('direct native observation boundary drifted');
+          if(r.native_observer.difference_channel!=='NEUTRAL_GRAYSCALE_FROM_DONOR_DERIVED_ELECTRIC_FLICKER_ENERGY_ONLY')throw new Error('direct native observation difference channel drifted');
+          if(r.outputs.phase_a_scene.sha256!==sha(sceneA)||r.outputs.phase_b_scene.sha256!==sha(sceneB)||r.outputs.donor_state.sha256!==sha(stateBytes))throw new Error('direct proof output byte binding drifted');
+          const t=v.truth_boundary;
+          if(t.electric_base_paths_authority!=='RETAINED_VFX_ELECTRIC_PATH_STATE'||t.flicker_source_authority!=='RETAINED_VFX_FLICKER_CYCLE_SOURCE'||t.modulation_source_authority!=='RETAINED_VFX_ELECTRIC_FLICKER_BINDING_SOURCE'||t.modulated_path_sets_authority!=='DERIVED_REBUILDABLE_VFX_BODY'||t.native_scenes_and_pixels_authority!=='DERIVED_REPLACEABLE_OBSERVER_BODIES')throw new Error('direct electric flicker truth boundary drifted');
+          if(t.physical_electricity_proven!==false||t.emitted_light_proven!==false||t.perceptual_flicker_quality_proven!==false||t.photosensitivity_or_comfort_proven!==false||t.aesthetic_quality_proven!==false)throw new Error('unsupported direct electric flicker claim was promoted');
+
+          const runtime=await import(pathToFileURL(resolve('visual-effect-fabric/hand-lab/src/hand-runtime.mjs')).href);
+          const modulation=await import(pathToFileURL(resolve('visual-effect-fabric/hand-lab/src/electric-flicker-modulation.mjs')).href);
+          if(runtime.hashValue(state.paths)!==state.electricBasePathsHash)throw new Error('retained electric paths no longer match donor hash');
+          if(runtime.hashValue(state.flickerCycleSource)!==state.flickerCycleSourceHash)throw new Error('retained flicker source no longer matches donor hash');
+          if(runtime.hashValue(state.electricFlickerModulationSource)!==state.electricFlickerModulationSourceHash)throw new Error('retained modulation source no longer matches donor hash');
+          const selected=state.flickerModulatedElectricPathSets['creative-render-direct-electric-flicker'];
+          if(!modulation.validateElectricFlickerModulatedPathSet(state,selected))throw new Error('pinned donor failed to rebuild retained phase A derived set');
+          if(selected.modulatedSetHash!==r.derived_sets.phase_a.modulated_set_hash)throw new Error('saved donor state lost phase A selected-set identity');
+
+          const challenges={
+            contract:'AXM_CREATIVE_VFX_DIRECT_ELECTRIC_FLICKER_CHALLENGES',version:1,
+            donor_rebuild_validation:'PASS',whole_cycle_identity_replay:'PASS',caller_neutral_replay:'PASS',
+            constant_range_policy:'EXACT_NO_OP',zero_strength_policy:'EXACT_NO_OP',
+            self_consistent_derived_tamper:'REJECTED_AS_REQUIRED',
+            authority:'RETAINED_ELECTRIC_PLUS_FLICKER_PLUS_BINDING_SOURCES__DERIVED_PATH_SET__REPLACEABLE_NATIVE_BODY'
+          };
+          await writeFile(root+'challenges.json',JSON.stringify(challenges,null,2)+'\n');
+          console.log('vfx_direct_electric_flicker_lineage=PASS');
+          console.log(`phase_a_modulated_set_hash=${r.derived_sets.phase_a.modulated_set_hash}`);
+          console.log(`phase_b_modulated_set_hash=${r.derived_sets.phase_b.modulated_set_hash}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify both donor-selected phases
+        run: |
+          root=creative-render/build/vfx-direct-electric-flicker
+          cat > "$root/phase-a.axmrender" <<'EOF_REQ'
+          AXM_RENDER_REQUEST 1
+          scene phase-a.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output phase-a.ppm
+          EOF_REQ
+          cat > "$root/phase-b.axmrender" <<'EOF_REQ'
+          AXM_RENDER_REQUEST 1
+          scene phase-b.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output phase-b.ppm
+          EOF_REQ
+          for name in phase-a phase-b; do
+            render-fabric/build/axm-render --request "$root/$name.axmrender" --receipt "$root/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$root/$name.axmrender" "$root/$name.axmreceipt"
+          done
+
+      - name: Bind donor-derived energy difference to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile,writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-direct-electric-flicker/';
+          const receiptBytes=await readFile(root+'direct-electric-flicker.receipt.json');
+          const receipt=JSON.parse(receiptBytes.toString('utf8'));
+          const renders={};
+          for(const name of ['phase-a','phase-b']){
+            const [scene,request,renderReceipt,frame]=await Promise.all([
+              readFile(root+name+'.axmscene'),readFile(root+name+'.axmrender'),readFile(root+name+'.axmreceipt'),readFile(root+name+'.ppm'),
+            ]);
+            renders[name]={scene_sha256:sha(scene),request_sha256:sha(request),receipt_sha256:sha(renderReceipt),frame_sha256:sha(frame),frame_bytes:frame.length};
+          }
+          if(renders['phase-a'].scene_sha256!==receipt.outputs.phase_a_scene.sha256||renders['phase-b'].scene_sha256!==receipt.outputs.phase_b_scene.sha256)throw new Error('direct electric flicker scene identity changed before native rendering');
+          if(renders['phase-a'].frame_sha256===renders['phase-b'].frame_sha256)throw new Error('donor-derived direct electric flicker energy difference did not reach native frame bytes');
+          const evidence={
+            contract:'AXM_CREATIVE_VFX_DIRECT_ELECTRIC_FLICKER_NATIVE_EVIDENCE',version:1,
+            creative_receipt_sha256:sha(receiptBytes),
+            retained_electric_base_paths_hash:receipt.visual_effect_fabric.retained.electric_base_paths_hash,
+            retained_flicker_cycle_source_hash:receipt.visual_effect_fabric.retained.flicker_cycle_source_hash,
+            retained_modulation_source_hash:receipt.visual_effect_fabric.retained.electric_flicker_modulation_source_hash,
+            phase_a_modulated_set_hash:receipt.derived_sets.phase_a.modulated_set_hash,
+            phase_b_modulated_set_hash:receipt.derived_sets.phase_b.modulated_set_hash,
+            phase_a_factor:receipt.derived_sets.phase_a.factor,phase_b_factor:receipt.derived_sets.phase_b.factor,
+            shared_layout_sha256:receipt.native_observer.phase_a.geometry_layout_sha256,
+            renders,render_receipt_replay:{'phase-a':'PASS','phase-b':'PASS'},
+            authority:{electric_base:'RETAINED_VFX_ELECTRIC_PATH_STATE',flicker_source:'RETAINED_VFX_FLICKER_CYCLE_SOURCE',binding_source:'RETAINED_VFX_ELECTRIC_FLICKER_BINDING_SOURCE',phase_sets:'DERIVED_REBUILDABLE_VFX_BODY',scenes:'DERIVED_REPLACEABLE_OBSERVER_BODIES',pixels:'DERIVED_RENDER_FABRIC_OUTPUT'},
+            truth_boundary:{proves:'the current VFX donor-owned electric flicker bridge rebuilds phase-selected derived path-energy sets from retained electric, flicker and binding sources, preserves non-energy geometry, closes over a whole cycle, honors constant-range and zero-strength exact no-op policies, rejects self-consistent derived tampering, and reaches independently receipt-verified native pixels through one replaceable observer',does_not_prove:'physical electricity, emitted-light correctness, bloom, perceptual flicker quality, photosensitivity safety, comfort, aesthetics, frame pacing, realtime/device suitability, GPU/browser equivalence or cross-machine bitwise determinism'}
+          };
+          await writeFile(root+'native-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_direct_electric_flicker_native=PASS');
+          console.log(`phase_a_frame_sha256=${renders['phase-a'].frame_sha256}`);
+          console.log(`phase_b_frame_sha256=${renders['phase-b'].frame_sha256}`);
+          NODE
+
+      - name: Upload complete direct electric flicker native proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-direct-electric-flicker-native-proof
+          path: creative-render/build/vfx-direct-electric-flicker/
+          if-no-files-found: warn
