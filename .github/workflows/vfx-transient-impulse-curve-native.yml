@@ -1,0 +1,192 @@
+name: vfx-transient-impulse-curve-native
+
+on:
+  pull_request:
+    paths:
+      - 'src/vfx_transient_impulse_curve_bridge.mjs'
+      - 'src/vfx_transient_impulse_curve_cli.mjs'
+      - 'tests/vfx_transient_impulse_curve_bridge.test.mjs'
+      - '.github/workflows/vfx-transient-impulse-curve-native.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/vfx_transient_impulse_curve_bridge.mjs'
+      - 'src/vfx_transient_impulse_curve_cli.mjs'
+      - 'tests/vfx_transient_impulse_curve_bridge.test.mjs'
+      - '.github/workflows/vfx-transient-impulse-curve-native.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-current-vfx-transient-impulse-curve-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: 47537462da33f2651b23c7ed57a6ccc319747538
+          path: visual-effect-fabric
+
+      - name: Checkout pinned Render Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Prepare retained proof directory
+        run: |
+          mkdir -p creative-render/build/vfx-transient-impulse-curve-native
+          cat > creative-render/build/vfx-transient-impulse-curve-native/donor-revisions.json <<'EOF'
+          {
+            "visual_effect_fabric": "47537462da33f2651b23c7ed57a6ccc319747538",
+            "render_fabric": "6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b"
+          }
+          EOF
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Build retained impulse, curve envelopes and fixed-geometry observation scenes
+        run: |
+          base=creative-render/build/vfx-transient-impulse-curve-native
+          node creative-render/src/vfx_transient_impulse_curve_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --vfx-revision 47537462da33f2651b23c7ed57a6ccc319747538 \
+            --event "$base/event.json" \
+            --field "$base/field.json" \
+            --base-envelope "$base/base-envelope.json" \
+            --noop-curve "$base/noop-curve.json" \
+            --shaped-curve "$base/shaped-curve.json" \
+            --noop-envelope "$base/noop-envelope.json" \
+            --shaped-envelope "$base/shaped-envelope.json" \
+            --noop-state "$base/noop-state.json" \
+            --shaped-state "$base/shaped-state.json" \
+            --base-scene "$base/base.axmscene" \
+            --noop-scene "$base/noop.axmscene" \
+            --shaped-scene "$base/shaped.axmscene" \
+            --receipt "$base/transient-impulse-curve.receipt.json"
+
+      - name: Independently assert authority, no-op continuity and shaped derived modulation
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { parseScene } from './creative-render/src/creative_scene_operator.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-transient-impulse-curve-native/';
+          const names=['event','field','base-envelope','noop-curve','shaped-curve','noop-envelope','shaped-envelope'];
+          const files=Object.fromEntries(await Promise.all(names.map(async name=>[name,await readFile(base+name+'.json')])));
+          const [receiptBytes,donorBytes,baseSceneBytes,noopSceneBytes,shapedSceneBytes]=await Promise.all([
+            readFile(base+'transient-impulse-curve.receipt.json'),readFile(base+'donor-revisions.json'),readFile(base+'base.axmscene'),readFile(base+'noop.axmscene'),readFile(base+'shaped.axmscene')
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          const donors=JSON.parse(donorBytes.toString('utf8'));
+          if(donors.visual_effect_fabric!=='47537462da33f2651b23c7ed57a6ccc319747538'||donors.render_fabric!=='6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b')throw new Error('pinned donor revision evidence drifted');
+          if(r.contract!=='AXM_CREATIVE_VFX_TRANSIENT_IMPULSE_CURVE_NATIVE_RECEIPT'||r.version!==1)throw new Error('transient impulse curve receipt contract drifted');
+          if(r.donor.revision!==donors.visual_effect_fabric||r.donor.graph_id!=='fx.transient-impulse.parameter-curve-modulation'||r.donor.graph_version!=='0.1.0')throw new Error('current VFX transient impulse curve graph was not exercised');
+          const expected=['fx.impulse.event-normalize','fx.impulse.field-build','fx.impulse.temporal-envelope','fx.animation.parameter-curve-source-normalize','fx.impulse.parameter-curve-modulate-envelope'];
+          if(JSON.stringify(r.donor.hand_ids)!==JSON.stringify(expected))throw new Error('VFX transient impulse curve Hand boundary drifted');
+          if(r.caller_authority.request_mutated!==false||r.caller_authority.caller_neutral_repeat_verification!=='PASS'||r.caller_authority.canonical_event_remains_authoritative!==true||r.caller_authority.parameter_curve_sources_remain_authoritative!==true||r.caller_authority.consumer_semantics_assigned!==false)throw new Error('transient impulse curve authority boundary failed');
+          if(r.canonical_event.bytes_sha256!==sha(files.event)||r.base_derived_state.field_bytes_sha256!==sha(files.field)||r.base_derived_state.envelope_bytes_sha256!==sha(files['base-envelope']))throw new Error('event/field/base-envelope byte binding drifted');
+          if(r.curve_sources.noop.bytes_sha256!==sha(files['noop-curve'])||r.curve_sources.shaped.bytes_sha256!==sha(files['shaped-curve']))throw new Error('curve-source byte binding drifted');
+          if(r.derived_curve_envelopes.noop.bytes_sha256!==sha(files['noop-envelope'])||r.derived_curve_envelopes.shaped.bytes_sha256!==sha(files['shaped-envelope']))throw new Error('derived curve-envelope byte binding drifted');
+          if(r.base_derived_state.same_across_curve_choices!==true||r.derived_curve_envelopes.noop.base_envelope_hash!==r.base_derived_state.envelope_hash||r.derived_curve_envelopes.shaped.base_envelope_hash!==r.base_derived_state.envelope_hash)throw new Error('base envelope continuity across curve choices failed');
+          if(r.derived_curve_envelopes.noop.exact_intensity_noop!==true||r.derived_curve_envelopes.noop.multiplier_stats.min!==1||r.derived_curve_envelopes.noop.multiplier_stats.max!==1)throw new Error('constant-one curve no-op gate failed');
+          if(r.derived_curve_envelopes.shaped.changed_intensity_sample_count<1||r.derived_curve_envelopes.shaped.expansion_preserved!==true)throw new Error('shaped derived intensity gate failed');
+          if(r.observation.t!==0.25||r.observation.base.intensity!==r.observation.noop.intensity||r.observation.noop.curve_multiplier!==1||r.observation.shaped.curve_multiplier!==1.4||r.observation.base.intensity===r.observation.shaped.intensity)throw new Error('retained t=0.25 observation challenge drifted');
+          if(sha(baseSceneBytes)!==r.observation.base.scene_sha256||sha(noopSceneBytes)!==r.observation.noop.scene_sha256||sha(shapedSceneBytes)!==r.observation.shaped.scene_sha256)throw new Error('observation scene byte binding drifted');
+          if(sha(baseSceneBytes)!==sha(noopSceneBytes)||sha(baseSceneBytes)===sha(shapedSceneBytes))throw new Error('constant-one no-op or shaped scene distinction failed');
+          const scenes=[baseSceneBytes,noopSceneBytes,shapedSceneBytes].map(bytes=>parseScene(bytes.toString('utf8')));
+          const geometry=scenes.map(scene=>JSON.stringify(scene.triangles.map(t=>t.vertices)));
+          if(new Set(geometry).size!==1)throw new Error('transient impulse observations changed geometry');
+          const albedos=scenes.map(scene=>JSON.stringify(scene.triangles.map(t=>t.albedo)));
+          if(albedos[0]!==albedos[1]||albedos[0]===albedos[2])throw new Error('intensity-only albedo observation gate failed');
+          for(const key of ['base','noop','shaped']){
+            const adapter=r.observation[key].adapter;
+            if(adapter.geometry_is_fixed!==true||adapter.albedo_encodes_only_intensity!==true||adapter.consumer_semantics_assigned!==false)throw new Error(`observation adapter boundary drifted for ${key}`);
+          }
+          const evidence={contract:'AXM_CREATIVE_VFX_TRANSIENT_IMPULSE_CURVE_INDEPENDENT_EVIDENCE',version:1,creative_receipt_sha256:sha(receiptBytes),donor_revisions:donors,canonical_event_hash:r.canonical_event.hash,base_envelope_hash:r.base_derived_state.envelope_hash,gates:{canonical_source_byte_binding:'PASS',base_lineage_continuity:'PASS',constant_one_exact_noop:'PASS',shaped_intensity_only_modulation:'PASS',caller_neutral_repeat:'PASS',fixed_geometry:'PASS',consumer_semantics_not_assigned:'PASS'}};
+          await writeFile(base+'independent-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_transient_impulse_curve_independent_evidence=PASS');
+          console.log(`canonical_event_hash=${r.canonical_event.hash}`);
+          console.log(`base_envelope_hash=${r.base_derived_state.envelope_hash}`);
+          console.log(`base_intensity=${r.observation.base.intensity}`);
+          console.log(`shaped_intensity=${r.observation.shaped.intensity}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify base, no-op and shaped intensity observations
+        run: |
+          base=creative-render/build/vfx-transient-impulse-curve-native
+          for name in base noop shaped; do
+            cat > "$base/$name.axmrender" <<EOF
+          AXM_RENDER_REQUEST 1
+          scene $name.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output $name.ppm
+          EOF
+            render-fabric/build/axm-render --request "$base/$name.axmrender" --receipt "$base/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$base/$name.axmrender" "$base/$name.axmreceipt"
+          done
+
+      - name: Bind retained derived intensity to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile,writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-transient-impulse-curve-native/';
+          const receiptBytes=await readFile(base+'transient-impulse-curve.receipt.json');
+          const receipt=JSON.parse(receiptBytes.toString('utf8'));
+          const renders={};
+          for(const name of ['base','noop','shaped']){
+            const [scene,request,renderReceipt,frame]=await Promise.all([
+              readFile(base+name+'.axmscene'),readFile(base+name+'.axmrender'),readFile(base+name+'.axmreceipt'),readFile(base+name+'.ppm')
+            ]);
+            renders[name]={scene_sha256:sha(scene),request_sha256:sha(request),receipt_sha256:sha(renderReceipt),frame_sha256:sha(frame),frame_bytes:frame.length};
+            if(receipt.observation[name].scene_sha256!==renders[name].scene_sha256)throw new Error(`scene identity changed before native rendering: ${name}`);
+          }
+          if(renders.base.scene_sha256!==renders.noop.scene_sha256||renders.base.scene_sha256===renders.shaped.scene_sha256)throw new Error('scene no-op/shaped identity boundary failed before render');
+          if(renders.base.frame_sha256!==renders.noop.frame_sha256)throw new Error('constant-one curve invented a native pixel difference');
+          if(renders.base.frame_sha256===renders.shaped.frame_sha256)throw new Error('shaped derived intensity did not reach distinct native frame bytes');
+          const evidence={contract:'AXM_CREATIVE_VFX_TRANSIENT_IMPULSE_CURVE_NATIVE_EVIDENCE',version:1,creative_receipt_sha256:sha(receiptBytes),donor_revisions:{visual_effect_fabric:'47537462da33f2651b23c7ed57a6ccc319747538',render_fabric:'6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b'},canonical_event_hash:receipt.canonical_event.hash,base_envelope_hash:receipt.base_derived_state.envelope_hash,observation:{t:receipt.observation.t,base_intensity:receipt.observation.base.intensity,noop_intensity:receipt.observation.noop.intensity,shaped_intensity:receipt.observation.shaped.intensity,noop_multiplier:receipt.observation.noop.curve_multiplier,shaped_multiplier:receipt.observation.shaped.curve_multiplier},renders,render_receipt_replay:{base:'PASS',noop:'PASS',shaped:'PASS'},native_frame_gates:{constant_one_noop:'PASS',shaped_intensity_difference:'PASS'},authority:receipt.authority,truth_boundary:receipt.truth_boundary};
+          await writeFile(base+'native-render-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_transient_impulse_curve_native_render=PASS');
+          console.log(`base_frame_sha256=${renders.base.frame_sha256}`);
+          console.log(`noop_frame_sha256=${renders.noop.frame_sha256}`);
+          console.log(`shaped_frame_sha256=${renders.shaped.frame_sha256}`);
+          NODE
+
+      - name: Upload retained VFX transient impulse curve native proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-transient-impulse-curve-native-proof
+          path: creative-render/build/vfx-transient-impulse-curve-native/
+          if-no-files-found: warn
