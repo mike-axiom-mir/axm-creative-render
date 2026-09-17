@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { runUniversalCreationOrthogonalPreflightExact } from "./uc_orthogonal_preflight_exact_native_bridge.mjs";
+import { runUniversalCreationOrthogonalPreflightExactNative } from "./uc_orthogonal_preflight_exact_native_observation.mjs";
 
 function args(argv) {
   const out = { _: [] };
@@ -25,7 +25,7 @@ async function main() {
     if (!parsed[key]) throw new Error(`missing --${key}`);
   }
 
-  const result = await runUniversalCreationOrthogonalPreflightExact(parsed["uc-root"], { ucRevision: parsed["uc-revision"] });
+  const result = await runUniversalCreationOrthogonalPreflightExactNative(parsed["uc-root"], { ucRevision: parsed["uc-revision"] });
   const outputs = [
     [parsed["source-scene"], result.sourceSceneBytes],
     [parsed["blocked-scene"], result.blockedSceneBytes],
@@ -42,6 +42,7 @@ async function main() {
   console.log(`near_caller_direction_x=${result.receipt.near_orthogonal_rounding_boundary.caller_direction_x}`);
   console.log(`near_presentation_direction_x=${result.receipt.near_orthogonal_rounding_boundary.presentation_direction_x}`);
   console.log(`near_delegated=${result.receipt.near_orthogonal_rounding_boundary.guard_accepted}`);
+  console.log(`native_observation_scale=${result.receipt.outputs.observation_adapter.scale}`);
 }
 
 main().catch((error) => {
