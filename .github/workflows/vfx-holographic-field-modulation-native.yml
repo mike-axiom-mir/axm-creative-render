@@ -1,0 +1,179 @@
+name: vfx-holographic-field-modulation-native
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vfx-holographic-field-modulation-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-vfx-holographic-field-modulation-native:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: bb36d629f0137fba0c36ada8017a7eeb6e31ef7e
+          path: visual-effect-fabric
+
+      - name: Checkout pinned current Render Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Execute current VFX holographic composed-field modulation
+        run: |
+          mkdir -p creative-render/build/vfx-holographic-field-modulation
+          node creative-render/src/vfx_holographic_field_modulation_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --base-scene creative-render/build/vfx-holographic-field-modulation/base.axmscene \
+            --modulated-scene creative-render/build/vfx-holographic-field-modulation/modulated.axmscene \
+            --state creative-render/build/vfx-holographic-field-modulation/vfx-state.json \
+            --receipt creative-render/build/vfx-holographic-field-modulation/modulation.receipt.json
+
+      - name: Assert canonical-form lineage and intensity-only adapter boundary
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { parseScene } from './creative-render/src/creative_scene_operator.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-holographic-field-modulation/';
+          const [receiptBytes,baseSceneBytes,modSceneBytes,stateBytes]=await Promise.all([
+            readFile(root+'modulation.receipt.json'),readFile(root+'base.axmscene'),readFile(root+'modulated.axmscene'),readFile(root+'vfx-state.json'),
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          if(r.contract!=='AXM_CREATIVE_VFX_HOLOGRAPHIC_FIELD_MODULATION_RECEIPT'||r.version!==1)throw new Error('holographic modulation receipt drifted');
+          const v=r.visual_effect_fabric;
+          if(v.graph_id!=='fx.holographic-state-projector.composed-field-modulation'||v.graph_version!=='0.1.0'||v.donor_graph_reused!==true)throw new Error('current VFX holographic modulation graph not exercised');
+          if(v.repeat_verification!=='PASS')throw new Error('VFX holographic modulation repeat gate failed');
+          if(v.base_sample.schema!=='axm.holographic-sample-field/v0.1')throw new Error('retained base sample schema drifted');
+          if(v.modulated_sample.schema!=='axm.holographic-modulated-sample-field/v0.1'||v.modulated_sample.derived!==true||v.modulated_sample.rebuildable!==true)throw new Error('derived holographic sample schema/boundary drifted');
+          if(v.modulated_sample.base_sample_hash!==v.base_sample.source_hash)throw new Error('modulated sample lost retained base identity');
+          if(v.base_sample.layout_sha256!==v.modulated_sample.layout_sha256)throw new Error('modulation changed native renderer sample layout');
+          if(v.base_sample.point_count!==v.modulated_sample.point_count)throw new Error('modulation changed point count');
+          if(v.invariants.canonical_form_hash_still_valid!==true||v.invariants.retained_base_hash_still_valid!==true||v.invariants.non_intensity_channels_preserved!==true||v.invariants.point_count_preserved!==true||v.invariants.renderer_layout_preserved!==true||v.invariants.derived_intensity_changed!==true)throw new Error('VFX holographic modulation invariants failed');
+          if(v.composition_source.schema!=='axm.scalar-field-composition-source/v0.1'||v.composition_source.operation!=='multiply')throw new Error('neutral composition source drifted');
+          if(v.modulation_source.schema!=='axm.holographic-field-modulation-source/v0.1'||v.modulation_source.mode!=='point-intensity'||v.modulation_source.axes!=='xy')throw new Error('neutral holographic modulation source drifted');
+          if(v.modulated_sample.factor_stats.samples!==v.base_sample.point_count)throw new Error('holographic modulation factor evidence drifted');
+          if(v.truth_boundary.physical_holography_proven!==false||v.truth_boundary.donor_webgl_equivalence_proven!==false||v.truth_boundary.aesthetic_quality_proven!==false)throw new Error('truth boundary was promoted');
+          if(r.outputs.base_scene.sha256!==sha(baseSceneBytes)||r.outputs.modulated_scene.sha256!==sha(modSceneBytes)||r.outputs.vfx_state.sha256!==sha(stateBytes))throw new Error('output byte binding drifted');
+          if(r.comparison.same_canonical_form_hash!==true||r.comparison.same_retained_base_hash!==true||r.comparison.same_point_count!==true||r.comparison.same_renderer_layout!==true||r.comparison.same_scene_triangle_count!==true||r.comparison.scene_bytes_differ!==true)throw new Error('base/modulated comparison gate failed');
+          if(r.comparison.adapter_difference_channel!=='RGB_ALBEDO_FROM_DERIVED_SAMPLE_INTENSITY_ONLY')throw new Error('adapter difference channel drifted');
+          const a=parseScene(baseSceneBytes.toString('utf8')),b=parseScene(modSceneBytes.toString('utf8'));
+          if(a.triangles.length!==b.triangles.length||a.triangles.length<1)throw new Error('derived holographic scene topology drifted');
+          for(let i=0;i<a.triangles.length;i++){
+            if(JSON.stringify(a.triangles[i].vertices)!==JSON.stringify(b.triangles[i].vertices))throw new Error('visual adapter geometry changed between base and modulated samples');
+          }
+          if(JSON.stringify(a.triangles.map(x=>x.albedo))===JSON.stringify(b.triangles.map(x=>x.albedo)))throw new Error('derived holographic intensity did not change adapter albedo');
+          console.log('vfx_holographic_field_modulation_lineage=PASS');
+          console.log(`canonical_form_hash=${v.canonical_form.source_hash}`);
+          console.log(`base_sample_hash=${v.base_sample.source_hash}`);
+          console.log(`modulated_sample_hash=${v.modulated_sample.sample_field_hash}`);
+          console.log(`factor_stats=${JSON.stringify(v.modulated_sample.factor_stats)}`);
+          console.log(`scene_triangles=${a.triangles.length}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify base and intensity-modulated holographic samples
+        run: |
+          root=creative-render/build/vfx-holographic-field-modulation
+          cat > "$root/base.axmrender" <<'EOF_REQ'
+          AXM_RENDER_REQUEST 1
+          scene base.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output base.ppm
+          EOF_REQ
+          cat > "$root/modulated.axmrender" <<'EOF_REQ'
+          AXM_RENDER_REQUEST 1
+          scene modulated.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output modulated.ppm
+          EOF_REQ
+          for name in base modulated; do
+            render-fabric/build/axm-render --request "$root/$name.axmrender" --receipt "$root/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$root/$name.axmrender" "$root/$name.axmreceipt"
+          done
+
+      - name: Bind derived holographic intensity to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile,writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-holographic-field-modulation/';
+          const receiptBytes=await readFile(root+'modulation.receipt.json');
+          const receipt=JSON.parse(receiptBytes.toString('utf8'));
+          const rows={};
+          for(const name of ['base','modulated']){
+            const [scene,request,renderReceipt,frame]=await Promise.all([
+              readFile(root+name+'.axmscene'),readFile(root+name+'.axmrender'),readFile(root+name+'.axmreceipt'),readFile(root+name+'.ppm'),
+            ]);
+            rows[name]={scene_sha256:sha(scene),request_sha256:sha(request),receipt_sha256:sha(renderReceipt),frame_sha256:sha(frame),frame_bytes:frame.length};
+          }
+          if(rows.base.scene_sha256!==receipt.outputs.base_scene.sha256||rows.modulated.scene_sha256!==receipt.outputs.modulated_scene.sha256)throw new Error('holographic scene identity changed before native rendering');
+          if(rows.base.frame_sha256===rows.modulated.frame_sha256)throw new Error('holographic sample intensity modulation did not change native frame bytes');
+          const evidence={
+            contract:'AXM_CREATIVE_VFX_HOLOGRAPHIC_FIELD_MODULATION_NATIVE_EVIDENCE',version:1,
+            modulation_receipt_sha256:sha(receiptBytes),
+            canonical_form_hash:receipt.visual_effect_fabric.canonical_form.source_hash,
+            base_sample_hash:receipt.visual_effect_fabric.base_sample.source_hash,
+            modulated_sample_hash:receipt.visual_effect_fabric.modulated_sample.sample_field_hash,
+            shared_layout_sha256:receipt.visual_effect_fabric.base_sample.layout_sha256,
+            composition_source_hash:receipt.visual_effect_fabric.composition_source.source_hash,
+            modulation_source_hash:receipt.visual_effect_fabric.modulation_source.source_hash,
+            factor_stats:receipt.visual_effect_fabric.modulated_sample.factor_stats,
+            renders:rows,
+            render_receipt_replay:{base:'PASS',modulated:'PASS'},
+            authority:{canonical_form:'CANONICAL_VFX_FORM_STATE',base_sample_field:'RETAINED_DERIVED_VFX_SAMPLE_STATE',scalar_sources:'CANONICAL_VFX_SCALAR_FIELD_SOURCES',composition_source:'CANONICAL_NEUTRAL_VFX_COMPOSITION_SOURCE',modulation_source:'CANONICAL_NEUTRAL_VFX_MODULATION_SOURCE',modulated_sample_field:'DERIVED_REBUILDABLE_VFX_BODY',scenes:'DERIVED_REPLACEABLE_VISUAL_ADAPTER_BODIES',pixels:'DERIVED_RENDER_FABRIC_OUTPUT'},
+            truth_boundary:{proves:'the real current VFX composed-field holographic modulation preserves canonical form identity and retained sample geometry, changes only a separately derived intensity body, and one explicit intensity-to-albedo adapter makes that difference observable through independently receipt-verified native pixels',does_not_prove:'physical holography, donor WebGL equivalence, projection/shimmer/breakup behavior, aesthetic quality, gameplay/world meaning, browser/GPU parity, realtime performance or cross-machine bitwise determinism'}
+          };
+          await writeFile(root+'native-modulation-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_holographic_field_modulation_native=PASS');
+          console.log(`base_frame_sha256=${rows.base.frame_sha256}`);
+          console.log(`modulated_frame_sha256=${rows.modulated.frame_sha256}`);
+          NODE
+
+      - name: Upload complete holographic field modulation native proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-holographic-field-modulation-native-proof
+          path: creative-render/build/vfx-holographic-field-modulation/
+          if-no-files-found: warn
