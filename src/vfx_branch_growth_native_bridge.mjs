@@ -71,10 +71,7 @@ export function branchGrowthNetworkToAxmScene(network) {
     }
   });
 
-  const scene = {
-    version: 1,
-    triangles: ordered.flatMap(segmentQuad),
-  };
+  const scene = { version: 1, triangles: ordered.flatMap(segmentQuad) };
   const bytes = Buffer.from(serializeScene(scene), "utf8");
   const reparsed = parseScene(bytes.toString("utf8"));
   if (reparsed.triangles.length !== network.segmentCount * 2) throw new Error("branch-growth scene adapter triangle count drifted");
@@ -136,17 +133,25 @@ export async function observeVisualEffectBranchGrowthNative(root, options = {}) 
     throw new Error("unexpected VFX branch-growth Hand boundary");
   }
 
-  const common = {
-    id: "creative-render-branch-growth",
-    origin: [0.5, 0.88],
-    headingTurns: 0.75,
-    baseLength: 0.18,
-    lengthDecay: 0.64,
-    generations: 5,
-  };
   const requests = {
-    symmetric: { ...common, branchOffsetsTurns: [-0.07, 0.07] },
-    asymmetric: { ...common, branchOffsetsTurns: [-0.03, 0.11] },
+    symmetric: {
+      id: "creative-render-branch-growth",
+      origin: [0.5, 0.88],
+      headingTurns: 0.75,
+      baseLength: 0.18,
+      lengthDecay: 0.64,
+      branchOffsetsTurns: [-0.07, 0.07],
+      generations: 5,
+    },
+    asymmetric: {
+      id: "creative-render-branch-growth",
+      origin: [0.5, 0.88],
+      headingTurns: 0.75,
+      baseLength: 0.18,
+      lengthDecay: 0.64,
+      branchOffsetsTurns: [-0.03, 0.11],
+      generations: 5,
+    },
   };
 
   const execute = (request, callerKind) => runtime.executeHandGraph({
@@ -195,9 +200,9 @@ export async function observeVisualEffectBranchGrowthNative(root, options = {}) 
 
     const adapted = branchGrowthNetworkToAxmScene(network);
     variants[name] = {
-      request,
       requestBytes: requestBytesBefore,
       source,
+      sourceHash,
       sourceBytes: stableBytes(source),
       network,
       networkBytes: stableBytes(network),
@@ -216,7 +221,7 @@ export async function observeVisualEffectBranchGrowthNative(root, options = {}) 
   if (variants.symmetric.source.branchOffsetsTurns.join(",") === variants.asymmetric.source.branchOffsetsTurns.join(",")) {
     throw new Error("branch-growth proof fixture did not exercise distinct caller-authored branch offsets");
   }
-  if (variants.symmetric.source.branchGrowthSourceHash === variants.asymmetric.source.branchGrowthSourceHash) {
+  if (variants.symmetric.sourceHash === variants.asymmetric.sourceHash) {
     throw new Error("branch-growth explicit source choice did not change source identity");
   }
   if (variants.symmetric.network.networkHash === variants.asymmetric.network.networkHash) {
@@ -230,7 +235,7 @@ export async function observeVisualEffectBranchGrowthNative(root, options = {}) 
     request_sha256: sha256(row.requestBytes),
     source: {
       schema: row.source.schema,
-      hash: row.sourceHash ?? row.source.branchGrowthSourceHash ?? row.sourceHash,
+      hash: row.sourceHash,
       bytes_sha256: sha256(row.sourceBytes),
       branch_offsets_turns: row.source.branchOffsetsTurns,
       generations: row.source.generations,
@@ -265,9 +270,6 @@ export async function observeVisualEffectBranchGrowthNative(root, options = {}) 
     final_state_sha256: sha256(row.stateBytes),
     caller_neutral_final_state_hash: row.finalStateHash,
   }]));
-
-  // Bind source hash explicitly from the retained canonical source; the donor stores it beside rather than inside the source object.
-  for (const [name, row] of Object.entries(variants)) receiptVariants[name].source.hash = row.network.sourceHash;
 
   const receipt = {
     contract: CONTRACT,
