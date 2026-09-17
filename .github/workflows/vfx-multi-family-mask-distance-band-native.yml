@@ -1,0 +1,210 @@
+name: vfx-multi-family-mask-distance-band-native
+
+on:
+  pull_request:
+    paths:
+      - 'src/vfx_multi_family_mask_distance_band_native_bridge.mjs'
+      - 'tests/vfx_multi_family_mask_distance_band_native_bridge.test.mjs'
+      - '.github/workflows/vfx-multi-family-mask-distance-band-native.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/vfx_multi_family_mask_distance_band_native_bridge.mjs'
+      - 'tests/vfx_multi_family_mask_distance_band_native_bridge.test.mjs'
+      - '.github/workflows/vfx-multi-family-mask-distance-band-native.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-current-vfx-multi-family-mask-distance-band-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: 11f80d4298a766cfef5c7d2f894fc17e1a95358c
+          path: visual-effect-fabric
+
+      - name: Checkout pinned Render Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Prepare retained attempt evidence
+        run: |
+          base=creative-render/build/vfx-multi-family-mask-distance-band-native
+          mkdir -p "$base"
+          cat > "$base/donor-revisions.json" <<'EOF'
+          {
+            "visual_effect_fabric": "11f80d4298a766cfef5c7d2f894fc17e1a95358c",
+            "render_fabric": "6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b"
+          }
+          EOF
+          cat > "$base/attempt-inputs.json" <<'EOF'
+          {
+            "source_families": ["fbm-value-noise-2d", "cellular-nearest-feature-2d"],
+            "shared_mask": {"threshold":0.5,"softness":0.1,"invert":false},
+            "shared_distance": {"isoLevel":0.5,"metric":"euclidean-normalized-domain","signConvention":"coverage-gte-iso-positive"},
+            "shared_band": {"innerWidth":0.05,"outerWidth":0.1,"softness":0.03,"signMapping":"positive-inside-negative-outside"},
+            "grid": {"width":48,"height":32,"cells":1536},
+            "observer": "one derived distance-band cell becomes one planar two-triangle square; neutral band coverage maps only to fixed grayscale albedo",
+            "consumer_semantics_assigned": false
+          }
+          EOF
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Build retained multi-family distance-band and native-scene evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { mkdir, writeFile } from 'node:fs/promises';
+          import { observeVisualEffectMaskDistanceBandFamiliesNative } from './creative-render/src/vfx_multi_family_mask_distance_band_native_bridge.mjs';
+          const base='creative-render/build/vfx-multi-family-mask-distance-band-native/';
+          await mkdir(base,{recursive:true});
+          const result=await observeVisualEffectMaskDistanceBandFamiliesNative('visual-effect-fabric',{vfxRevision:'11f80d4298a766cfef5c7d2f894fc17e1a95358c'});
+          for(const name of ['fbm','cellular']){
+            const row=result.variants[name];
+            await Promise.all([
+              writeFile(base+name+'-request.json',row.requestBytes),
+              writeFile(base+name+'-source.json',row.sourceBytes),
+              writeFile(base+name+'-mask-source.json',row.maskSourceBytes),
+              writeFile(base+name+'-distance-source.json',row.distanceSourceBytes),
+              writeFile(base+name+'-band-source.json',row.bandSourceBytes),
+              writeFile(base+name+'-coverage-grid.json',row.coverageGridBytes),
+              writeFile(base+name+'-distance-grid.json',row.distanceGridBytes),
+              writeFile(base+name+'-band-grid.json',row.gridBytes),
+              writeFile(base+name+'.axmscene',row.adapted.bytes),
+            ]);
+          }
+          await writeFile(base+'multi-family-mask-distance-band.receipt.json',JSON.stringify(result.receipt,null,2)+'\n');
+          console.log('vfx_multi_family_mask_distance_band_bridge=PASS');
+          console.log(`fbm_band_grid_hash=${result.variants.fbm.grid.bandGridHash}`);
+          console.log(`cellular_band_grid_hash=${result.variants.cellular.grid.bandGridHash}`);
+          NODE
+
+      - name: Independently assert authority, lineage, asymmetry, rebuildability and bounded work
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { parseScene } from './creative-render/src/creative_scene_operator.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-multi-family-mask-distance-band-native/';
+          const [receiptBytes,donorBytes,attemptBytes]=await Promise.all([
+            readFile(base+'multi-family-mask-distance-band.receipt.json'),
+            readFile(base+'donor-revisions.json'),
+            readFile(base+'attempt-inputs.json'),
+          ]);
+          const receipt=JSON.parse(receiptBytes.toString('utf8'));
+          const donors=JSON.parse(donorBytes.toString('utf8'));
+          const attempt=JSON.parse(attemptBytes.toString('utf8'));
+          if(donors.visual_effect_fabric!=='11f80d4298a766cfef5c7d2f894fc17e1a95358c'||donors.render_fabric!=='6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b')throw new Error('pinned donor evidence drifted');
+          if(receipt.contract!=='AXM_CREATIVE_VFX_MULTI_FAMILY_MASK_DISTANCE_BAND_NATIVE_RECEIPT'||receipt.version!==1)throw new Error('distance-band receipt contract drifted');
+          if(receipt.donor.revision!==donors.visual_effect_fabric||receipt.donor.graphs.fbm.id!=='fx.field.mask-distance-band2d'||receipt.donor.graphs.cellular.id!=='fx.field.mask-distance-band2d-cellular')throw new Error('current VFX distance-band graphs were not exercised');
+          if(receipt.shared_contract.derived_schema!=='axm.distance-band-grid/v0.1'||receipt.shared_contract.generic_sampler!=='sampleMaskDistanceBandGrid'||receipt.shared_contract.source_family_branching!==false)throw new Error('shared distance-band contract drifted');
+          if(receipt.authority.canonical_scalar_sources_remain_authoritative!==true||receipt.authority.coverage_transfer_sources_remain_authoritative!==true||receipt.authority.mask_distance_sources_remain_authoritative!==true||receipt.authority.mask_distance_band_sources_remain_authoritative!==true||receipt.authority.derived_grids_are_canonical!==false||receipt.authority.native_scenes_are_canonical!==false||receipt.authority.consumer_semantics_assigned!==false||receipt.authority.source_truth_rebuild_rejects_derived_distance_tampering!==true)throw new Error('authority boundary failed');
+
+          const retained={};
+          for(const name of ['fbm','cellular']){
+            const files=await Promise.all([
+              readFile(base+name+'-request.json'),readFile(base+name+'-source.json'),readFile(base+name+'-mask-source.json'),readFile(base+name+'-distance-source.json'),readFile(base+name+'-band-source.json'),readFile(base+name+'-coverage-grid.json'),readFile(base+name+'-distance-grid.json'),readFile(base+name+'-band-grid.json'),readFile(base+name+'.axmscene')
+            ]);
+            const [requestBytes,sourceBytes,maskSourceBytes,distanceSourceBytes,bandSourceBytes,coverageBytes,distanceBytes,gridBytes,sceneBytes]=files;
+            const source=JSON.parse(sourceBytes); const maskSource=JSON.parse(maskSourceBytes); const distanceSource=JSON.parse(distanceSourceBytes); const bandSource=JSON.parse(bandSourceBytes); const distanceGrid=JSON.parse(distanceBytes); const grid=JSON.parse(gridBytes);
+            const row=receipt.variants[name];
+            if(row.request_sha256!==sha(requestBytes)||row.source.bytes_sha256!==sha(sourceBytes)||row.mask_source.bytes_sha256!==sha(maskSourceBytes)||row.distance_source.bytes_sha256!==sha(distanceSourceBytes)||row.band_source.bytes_sha256!==sha(bandSourceBytes)||row.coverage_grid.bytes_sha256!==sha(coverageBytes)||row.distance_grid.bytes_sha256!==sha(distanceBytes)||row.band_grid.bytes_sha256!==sha(gridBytes)||row.native_scene.bytes_sha256!==sha(sceneBytes))throw new Error(`retained byte binding drifted for ${name}`);
+            if(grid.schema!=='axm.distance-band-grid/v0.1'||grid.bandSourceHash!==row.band_source.hash||grid.distanceSourceHash!==row.distance_source.hash||grid.distanceGridHash!==row.distance_grid.hash||grid.width!==attempt.grid.width||grid.height!==attempt.grid.height||grid.values.length!==attempt.grid.cells||grid.derived!==true||grid.rebuildable!==true)throw new Error(`distance-band lineage drifted for ${name}`);
+            if(bandSource.distanceSourceHash!==row.distance_source.hash||bandSource.innerWidth!==attempt.shared_band.innerWidth||bandSource.outerWidth!==attempt.shared_band.outerWidth||bandSource.softness!==attempt.shared_band.softness||bandSource.signMapping!==attempt.shared_band.signMapping)throw new Error(`distance-band source semantics drifted for ${name}`);
+            if(distanceSource.maskSourceHash!==row.mask_source.hash||maskSource.fieldSourceHash!==row.source.hash)throw new Error(`upstream retained lineage drifted for ${name}`);
+            if(!(row.asymmetry_probe.negative_0_08>row.asymmetry_probe.positive_0_08))throw new Error(`asymmetric inner/outer treatment is not evidenced for ${name}`);
+            if(row.lower_resolution_rebuild.width!==24||row.lower_resolution_rebuild.height!==16||row.lower_resolution_rebuild.sameBandSourceHash!==true||row.lower_resolution_rebuild.bandGridHash===row.band_grid.hash)throw new Error(`resolution-rebuild boundary failed for ${name}`);
+            if(!row.gates.insufficient_cell_budget_failed.includes('maskDistanceBand cell budget exceeded')||!row.gates.insufficient_comparison_budget_failed.includes('maskDistance comparison budget exceeded')||!row.gates.self_consistent_derived_distance_tamper_failed.includes('differs from source-truth rebuild'))throw new Error(`failure gate drifted for ${name}`);
+            if(!Array.isArray(row.generic_samples)||row.generic_samples.length!==5||row.generic_samples.some(sample=>!Number.isFinite(sample.value)||sample.value<0||sample.value>1))throw new Error(`generic sampler evidence drifted for ${name}`);
+            if(row.native_scene.adapter.source_family_branching!==false||row.native_scene.adapter.consumer_semantics_assigned!==false||row.native_scene.adapter.canonical_source_rewritten!==false||row.native_scene.adapter.derived!==true||row.native_scene.adapter.replaceable!==true)throw new Error(`native observer boundary drifted for ${name}`);
+            const scene=parseScene(sceneBytes.toString('utf8'));
+            if(scene.triangles.length!==3072||row.native_scene.triangles!==3072)throw new Error(`native triangle count drifted for ${name}`);
+            retained[name]={source,distanceGrid,grid,scene};
+          }
+          if(retained.fbm.source.schema===retained.cellular.source.schema)throw new Error('fixture no longer proves distinct retained source families');
+          if(receipt.comparison.source_hashes_differ!==true||receipt.comparison.band_grid_hashes_differ!==true||receipt.comparison.native_geometry_identical!==true||receipt.comparison.native_albedo_differs!==true||receipt.comparison.native_scene_bytes_differ!==true)throw new Error('multi-family comparison drifted');
+          const geometry=scene=>scene.triangles.map(t=>t.vertices); const albedo=scene=>scene.triangles.map(t=>t.albedo);
+          if(JSON.stringify(geometry(retained.fbm.scene))!==JSON.stringify(geometry(retained.cellular.scene)))throw new Error('source family leaked into observation geometry');
+          if(JSON.stringify(albedo(retained.fbm.scene))===JSON.stringify(albedo(retained.cellular.scene)))throw new Error('distinct band grids collapsed to identical observation albedo');
+          const evidence={contract:'AXM_CREATIVE_VFX_MULTI_FAMILY_MASK_DISTANCE_BAND_INDEPENDENT_EVIDENCE',version:1,creative_receipt_sha256:sha(receiptBytes),donor_revisions:donors,gates:{canonical_source_authority:'PASS',retained_band_source:'PASS',caller_neutral_replay:'PASS',generic_distance_band_grid_contract:'PASS',asymmetric_band_transfer:'PASS',resolution_rebuild_without_source_rewrite:'PASS',sufficient_budgets_noncreative:'PASS',insufficient_budgets_fail_loudly:'PASS',self_consistent_derived_distance_tamper_rejected:'PASS',source_family_neutral_native_adapter:'PASS',consumer_semantics_not_assigned:'PASS'}};
+          await writeFile(base+'independent-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_multi_family_mask_distance_band_independent_evidence=PASS');
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify both distance-band observations
+        run: |
+          base=creative-render/build/vfx-multi-family-mask-distance-band-native
+          for name in fbm cellular; do
+            cat > "$base/$name.axmrender" <<EOF
+          AXM_RENDER_REQUEST 1
+          scene $name.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output $name.ppm
+          EOF
+            render-fabric/build/axm-render --request "$base/$name.axmrender" --receipt "$base/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$base/$name.axmrender" "$base/$name.axmreceipt"
+          done
+
+      - name: Bind distance-band evidence to native pixels
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-multi-family-mask-distance-band-native/';
+          const receiptBytes=await readFile(base+'multi-family-mask-distance-band.receipt.json');
+          const receipt=JSON.parse(receiptBytes.toString('utf8'));
+          const renders={};
+          for(const name of ['fbm','cellular']){
+            const [scene,request,renderReceipt,frame]=await Promise.all([readFile(base+name+'.axmscene'),readFile(base+name+'.axmrender'),readFile(base+name+'.axmreceipt'),readFile(base+name+'.ppm')]);
+            renders[name]={scene_sha256:sha(scene),request_sha256:sha(request),receipt_sha256:sha(renderReceipt),frame_sha256:sha(frame),frame_bytes:frame.length};
+            if(receipt.variants[name].native_scene.bytes_sha256!==renders[name].scene_sha256)throw new Error(`scene identity changed before native rendering: ${name}`);
+          }
+          if(renders.fbm.frame_sha256===renders.cellular.frame_sha256)throw new Error('distinct distance-band grids did not reach distinct native frame bytes');
+          const evidence={contract:'AXM_CREATIVE_VFX_MULTI_FAMILY_MASK_DISTANCE_BAND_NATIVE_EVIDENCE',version:1,creative_receipt_sha256:sha(receiptBytes),donor_revisions:{visual_effect_fabric:'11f80d4298a766cfef5c7d2f894fc17e1a95358c',render_fabric:'6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b'},band_grid_hashes:{fbm:receipt.variants.fbm.band_grid.hash,cellular:receipt.variants.cellular.band_grid.hash},renders,render_receipt_replay:{fbm:'PASS',cellular:'PASS'},authority:receipt.authority,truth_boundary:receipt.truth_boundary};
+          await writeFile(base+'native-render-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_multi_family_mask_distance_band_native_render=PASS');
+          console.log(`fbm_frame_sha256=${renders.fbm.frame_sha256}`);
+          console.log(`cellular_frame_sha256=${renders.cellular.frame_sha256}`);
+          NODE
+
+      - name: Upload retained multi-family mask-distance-band proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-multi-family-mask-distance-band-native-proof
+          path: creative-render/build/vfx-multi-family-mask-distance-band-native
+          if-no-files-found: warn
