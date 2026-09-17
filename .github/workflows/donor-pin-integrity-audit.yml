@@ -1,0 +1,129 @@
+name: donor-pin-integrity-audit
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - 'src/donor_pin_audit.mjs'
+      - 'tests/donor_pin_audit.test.mjs'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+      - 'src/donor_pin_audit.mjs'
+      - 'tests/donor_pin_audit.test.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-donor-pin-integrity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Prepare retained audit request before assertions
+        run: |
+          mkdir -p build/donor-pin-audit
+          cat > build/donor-pin-audit/attempt.json <<EOF
+          {
+            "contract": "AXM_CREATIVE_DONOR_PIN_AUDIT_ATTEMPT",
+            "version": 1,
+            "creative_render_head": "${GITHUB_SHA}",
+            "scope": ".github/workflows/*.yml|*.yaml",
+            "policy": {
+              "external_checkout_ref_must_be_exact_40_hex_commit": true,
+              "historical_exact_pins_are_allowed": true,
+              "current_donor_head_drift_is_evidence_not_failure": true,
+              "remote_commit_resolution_is_required": true
+            }
+          }
+          EOF
+
+      - name: Audit immutable donor pins and resolve exact donor commits
+        id: audit
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          node src/donor_pin_audit.mjs \
+            --workflow-dir .github/workflows \
+            --out build/donor-pin-audit/audit.json \
+            --resolve-remote
+
+      - name: Run complete Creative Render test suite
+        id: tests
+        if: always()
+        continue-on-error: true
+        run: npm test
+
+      - name: Independently assert audit truth boundary
+        id: independent
+        if: always()
+        continue-on-error: true
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
+          const bytes = await readFile('build/donor-pin-audit/audit.json');
+          const report = JSON.parse(bytes.toString('utf8'));
+          if (report.contract !== 'AXM_CREATIVE_DONOR_PIN_AUDIT' || report.version !== 1) throw new Error('audit contract drifted');
+          if (report.boundary?.exact_commit_pins_are_required !== true) throw new Error('exact pin boundary missing');
+          if (report.boundary?.current_head_drift_is_evidence_not_failure !== true) throw new Error('head-drift truth boundary missing');
+          if (report.boundary?.donor_source_remains_authoritative !== true) throw new Error('donor authority boundary missing');
+          if (report.boundary?.audit_output_is_derived_replaceable_evidence !== true) throw new Error('derived audit boundary missing');
+          if (!(report.summary?.external_checkout_count > 0)) throw new Error('audit discovered no donor checkouts');
+          if (report.summary.mutable_or_missing_ref_count !== 0) throw new Error('mutable or missing donor checkout ref found');
+          if (report.summary.resolution_failure_count !== 0) throw new Error('one or more exact donor commits no longer resolve');
+          if (report.summary.immutable_checkout_count !== report.summary.external_checkout_count) throw new Error('not every donor checkout is immutable');
+          if (!(report.summary.unique_resolved_pin_count > 0)) throw new Error('no exact donor pin was resolved remotely');
+          if (report.summary.ok !== true) throw new Error('donor pin audit did not pass');
+          for (const row of report.remote.pins) {
+            if (row.ok !== true || row.resolved_sha !== row.pin) throw new Error(`exact donor pin failed byte-address identity: ${row.repository}@${row.pin}`);
+          }
+          const evidence = {
+            contract: 'AXM_CREATIVE_DONOR_PIN_AUDIT_INDEPENDENT_EVIDENCE',
+            version: 1,
+            audit_sha256: sha(bytes),
+            workflow_count: report.summary.workflow_count,
+            external_checkout_count: report.summary.external_checkout_count,
+            unique_resolved_pin_count: report.summary.unique_resolved_pin_count,
+            historical_pin_count: report.summary.historical_pin_count,
+            gates: {
+              immutable_external_refs: 'PASS',
+              exact_remote_commit_resolution: 'PASS',
+              stale_head_not_promoted_to_failure: 'PASS',
+              donor_authority_retained: 'PASS',
+              audit_evidence_remains_derived: 'PASS'
+            }
+          };
+          await writeFile('build/donor-pin-audit/independent-evidence.json', `${JSON.stringify(evidence, null, 2)}\n`);
+          console.log('donor_pin_independent_evidence=PASS');
+          console.log(`external_checkout_count=${report.summary.external_checkout_count}`);
+          console.log(`unique_resolved_pin_count=${report.summary.unique_resolved_pin_count}`);
+          console.log(`historical_pin_count=${report.summary.historical_pin_count}`);
+          NODE
+
+      - name: Upload retained donor pin evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-donor-pin-integrity-proof
+          path: build/donor-pin-audit
+          if-no-files-found: warn
+
+      - name: Final retained-evidence gate
+        if: always()
+        run: |
+          test '${{ steps.audit.outcome }}' = 'success'
+          test '${{ steps.tests.outcome }}' = 'success'
+          test '${{ steps.independent.outcome }}' = 'success'
