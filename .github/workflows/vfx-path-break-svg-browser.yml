@@ -1,0 +1,172 @@
+name: vfx-path-break-svg-browser
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vfx-path-break-svg-browser-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-vfx-path-break-svg-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: d7cabe1f46b40e95e1308e049b632e1e46d7d726
+          path: visual-effect-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Prepare retained attempt evidence
+        run: |
+          root=creative-render/build/vfx-path-break-svg-browser
+          mkdir -p "$root"
+          cat > "$root/donor-revisions.json" <<'EOF'
+          {
+            "visual_effect_fabric": "d7cabe1f46b40e95e1308e049b632e1e46d7d726"
+          }
+          EOF
+          cat > "$root/attempt.json" <<'EOF'
+          {
+            "lane": "vfx-path-break-svg-browser",
+            "canonical_authority": "caller paths plus retained VFX path-break treatment",
+            "derived_replaceable": ["broken path sets", "SVG realizations", "browser probe", "browser pixels", "screenshots"],
+            "automatic_aesthetic_acceptance": false
+          }
+          EOF
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Build exact source-honest zero and active path-break SVG proof
+        run: |
+          node --input-type=module <<'NODE'
+          import { mkdir, writeFile } from 'node:fs/promises';
+          import { resolve } from 'node:path';
+          import { sha256 } from './creative-render/src/creative_scene_operator.mjs';
+          import { observeVisualEffectPathBreakStaticSvg } from './creative-render/src/vfx_path_break_svg_browser_bridge.mjs';
+          const root='creative-render/build/vfx-path-break-svg-browser';
+          await mkdir(root,{recursive:true});
+          const observed=await observeVisualEffectPathBreakStaticSvg(resolve('visual-effect-fabric'),{vfxRevision:'d7cabe1f46b40e95e1308e049b632e1e46d7d726'});
+          const files={
+            'source-paths.json':observed.sourcePathsBytes,
+            'fragmentation.receipt.json':observed.fragmentationReceiptBytes,
+            'zero-state.json':observed.zeroStateBytes,
+            'active-state.json':observed.activeStateBytes,
+            'zero.svg':observed.zeroSvg,
+            'active.svg':observed.activeSvg,
+            'alternate-presentation.svg':observed.alternateSvg,
+            'browser-probe.html':observed.probeHtml,
+          };
+          const outputs={};
+          for(const [name,bytes] of Object.entries(files)){await writeFile(`${root}/${name}`,bytes);outputs[name]={sha256:sha256(bytes),bytes:bytes.length};}
+          const receipt={contract:'AXM_CREATIVE_VFX_PATH_BREAK_SVG_BROWSER_BUILD_RECEIPT',version:1,visual_effect_fabric:observed.observation,outputs,authority:{canonical:'caller paths plus retained VFX path-break treatment',derived_replaceable:['broken path sets','SVG realizations','browser probe','browser pixels','screenshots']}};
+          const receiptBytes=Buffer.from(JSON.stringify(receipt,null,2)+'\n');
+          await writeFile(`${root}/build.receipt.json`,receiptBytes);
+          console.log('vfx_path_break_svg_build=PASS');
+          console.log(`zero_svg_sha256=${outputs['zero.svg'].sha256}`);
+          console.log(`active_svg_sha256=${outputs['active.svg'].sha256}`);
+          console.log(`receipt_sha256=${sha256(receiptBytes)}`);
+          NODE
+
+      - name: Independently assert source authority, rebuild lineage, budgets and topology boundary
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-path-break-svg-browser/';
+          const [receiptBytes,donorBytes,sourceBytes,zeroStateBytes,activeStateBytes,zeroSvg,activeSvg,alternateSvg,probe]=await Promise.all([
+            readFile(root+'build.receipt.json'),readFile(root+'donor-revisions.json'),readFile(root+'source-paths.json'),readFile(root+'zero-state.json'),readFile(root+'active-state.json'),readFile(root+'zero.svg'),readFile(root+'active.svg'),readFile(root+'alternate-presentation.svg'),readFile(root+'browser-probe.html')
+          ]);
+          const r=JSON.parse(receiptBytes),d=JSON.parse(donorBytes),v=r.visual_effect_fabric;
+          if(d.visual_effect_fabric!=='d7cabe1f46b40e95e1308e049b632e1e46d7d726'||v.donor_revision!==d.visual_effect_fabric)throw new Error('pinned VFX revision evidence drifted');
+          if(r.contract!=='AXM_CREATIVE_VFX_PATH_BREAK_SVG_BROWSER_BUILD_RECEIPT'||r.version!==1)throw new Error('build receipt drifted');
+          if(v.fragmentation_graph_id!=='fx.path.break-fragment2d'||v.static_graph_id!=='fx.path.break-fragment-static-svg'||v.static_hand_id!=='fx.path.break-static-svg-realize')throw new Error('expected current path-break donor graphs were not exercised');
+          if(v.caller_neutral_repeat_verification!=='PASS')throw new Error('caller-neutral repeat verification failed');
+          if(v.zero.break_count!==0||v.zero.fragment_count!==2||v.zero.point_count!==10||v.zero.removed_normalized_length_per_path!==0)throw new Error('zero-break no-op boundary drifted');
+          if(v.active.break_count!==2||v.active.gap_width!==0.08||v.active.phase!==0.5||v.active.fragment_count!==6||v.active.point_count!==18||v.active.removed_normalized_length_per_path!==0.16)throw new Error('active path-break fixture drifted');
+          if(v.zero.source_path_count!==2||v.active.source_path_count!==2||v.zero.source_point_count!==10||v.active.source_point_count!==10)throw new Error('retained source cardinality drifted');
+          if(v.zero.path_set_hash===v.active.path_set_hash||v.zero.break_source_hash===v.active.break_source_hash)throw new Error('explicit break treatment did not alter derived identities');
+          if(v.zero.derived_from_path_set_hash!==v.zero.path_set_hash||v.active.derived_from_path_set_hash!==v.active.path_set_hash)throw new Error('SVG realization lost selected path-set lineage');
+          if(v.svg_point_budget_challenge.exact_max_points!==18||v.svg_point_budget_challenge.roomy_max_points!==4096||v.svg_point_budget_challenge.sufficient_budget_identity_preserved!==true||v.svg_point_budget_challenge.insufficient_max_points!==17||v.svg_point_budget_challenge.insufficient_rejected!==true||!/point budget exceeded/.test(v.svg_point_budget_challenge.error))throw new Error('SVG point budget boundary failed');
+          if(v.presentation_challenge.same_path_set_hash!==true||v.presentation_challenge.svg_bytes_changed!==true||v.presentation_challenge.retained_source_mutated!==false||v.presentation_challenge.derived_path_set_mutated!==false)throw new Error('renderer-only presentation boundary failed');
+          if(v.forbidden_base_underlay_challenge.requested_show_base!==true||v.forbidden_base_underlay_challenge.rejected!==true||!/showBase must remain false/.test(v.forbidden_base_underlay_challenge.error))throw new Error('fragmented topology base-underlay refusal failed');
+          if(v.derived_tamper_challenge.recomputed_self_consistent_hash!==true||v.derived_tamper_challenge.rejected!==true||!/does not match retained sources/.test(v.derived_tamper_challenge.error))throw new Error('self-consistent derived tamper was not rejected from retained source truth');
+          const o=r.outputs;
+          if(o['source-paths.json'].sha256!==sha(sourceBytes)||o['zero-state.json'].sha256!==sha(zeroStateBytes)||o['active-state.json'].sha256!==sha(activeStateBytes)||o['zero.svg'].sha256!==sha(zeroSvg)||o['active.svg'].sha256!==sha(activeSvg)||o['alternate-presentation.svg'].sha256!==sha(alternateSvg)||o['browser-probe.html'].sha256!==sha(probe))throw new Error('retained proof byte binding drifted');
+          if(o['zero.svg'].sha256===o['active.svg'].sha256||o['active.svg'].sha256===o['alternate-presentation.svg'].sha256)throw new Error('derived SVG challenge did not remain observable');
+          const zeroText=zeroSvg.toString('utf8'),activeText=activeSvg.toString('utf8');
+          if(zeroText.includes('data-layer="base-paths"')||activeText.includes('data-layer="base-paths"'))throw new Error('fragmented SVG mislabeled a canonical base underlay');
+          if(v.truth_boundary.browser_pixels_proven!==false||v.truth_boundary.aesthetic_quality_proven!==false||v.truth_boundary.physical_fracture_proven!==false)throw new Error('pre-browser truth boundary was promoted');
+          const evidence={contract:'AXM_CREATIVE_VFX_PATH_BREAK_SVG_INDEPENDENT_EVIDENCE',version:1,build_receipt_sha256:sha(receiptBytes),donor_revision:v.donor_revision,path_source_hash:v.retained_sources.path_source_hash,zero_path_set_hash:v.zero.path_set_hash,active_path_set_hash:v.active.path_set_hash,gates:{caller_authority:'PASS',source_rebuild_lineage:'PASS',derived_tamper_rejected:'PASS',presentation_replaceability:'PASS',svg_budget_boundary:'PASS',false_base_underlay_refused:'PASS',caller_neutral_repeat:'PASS',pre_browser_truth_boundary:'PASS'}};
+          await writeFile(root+'independent-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_path_break_svg_lineage=PASS');
+          NODE
+
+      - name: Locate installed browser and retain exact version
+        run: |
+          root=creative-render/build/vfx-path-break-svg-browser
+          browser="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || true)"
+          if [ -z "$browser" ]; then echo "No supported Chromium-family browser is installed" >&2; exit 1; fi
+          printf '%s\n' "$browser" > "$root/browser-path.txt"
+          "$browser" --version | tee "$root/browser-version.txt"
+
+      - name: Rasterize exact donor SVGs through the real headless browser
+        run: |
+          root=creative-render/build/vfx-path-break-svg-browser
+          browser="$(cat "$root/browser-path.txt")"
+          probe_uri="file://$(realpath "$root/browser-probe.html")"
+          "$browser" --headless=new --no-sandbox --disable-gpu --allow-file-access-from-files --virtual-time-budget=5000 --dump-dom "$probe_uri" > "$root/browser-probe.dump.html"
+          grep -q 'data-axm-done="true"' "$root/browser-probe.dump.html"
+          "$browser" --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=640,420 --screenshot="$PWD/$root/zero-browser.png" "file://$(realpath "$root/zero.svg")"
+          "$browser" --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=640,420 --screenshot="$PWD/$root/active-browser.png" "file://$(realpath "$root/active.svg")"
+          test -s "$root/zero-browser.png" && test -s "$root/active-browser.png"
+
+      - name: Verify and bind raw browser pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { parsePathBreakSvgBrowserProbeDump, verifyPathBreakSvgBrowserRasterEvidence } from './creative-render/src/vfx_path_break_svg_browser_bridge.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-path-break-svg-browser/';
+          const [dump,probe,receiptBytes,browserVersionBytes,zeroShot,activeShot]=await Promise.all([readFile(root+'browser-probe.dump.html'),readFile(root+'browser-probe.html'),readFile(root+'build.receipt.json'),readFile(root+'browser-version.txt'),readFile(root+'zero-browser.png'),readFile(root+'active-browser.png')]);
+          const r=JSON.parse(receiptBytes),v=r.visual_effect_fabric;
+          if(sha(probe)!==r.outputs['browser-probe.html'].sha256)throw new Error('browser probe changed after build receipt');
+          const raster=verifyPathBreakSvgBrowserRasterEvidence(parsePathBreakSvgBrowserProbeDump(dump),{zeroSvgSha256:r.outputs['zero.svg'].sha256,activeSvgSha256:r.outputs['active.svg'].sha256});
+          const sig='89504e470d0a1a0a';if(zeroShot.subarray(0,8).toString('hex')!==sig||activeShot.subarray(0,8).toString('hex')!==sig)throw new Error('browser screenshots are not PNG');
+          const browserVersion=browserVersionBytes.toString('utf8').trim();if(!browserVersion)throw new Error('browser version evidence is empty');
+          const evidence={contract:'AXM_CREATIVE_VFX_PATH_BREAK_SVG_BROWSER_RASTER_EVIDENCE',version:1,build_receipt_sha256:sha(receiptBytes),donor_revision:v.donor_revision,path_source_hash:v.retained_sources.path_source_hash,zero_path_set_hash:v.zero.path_set_hash,active_path_set_hash:v.active.path_set_hash,browser:{version:browserVersion,version_sha256:sha(browserVersionBytes),mode:'headless-local-file',network_required:false},raster,screenshots:{zero:{sha256:sha(zeroShot),bytes:zeroShot.length},active:{sha256:sha(activeShot),bytes:activeShot.length}},authority:{canonical:'caller paths plus retained VFX path-break treatment',browser_rgba_and_screenshots:'DERIVED_BROWSER_OUTPUT'},truth_boundary:{proves:'the identified local browser decoded and rasterized the exact hash-bound source-honest zero and active donor path-break SVGs and the explicit fragmentation choice reached measurably different pixels without inventing a false base topology',does_not_prove:'aesthetic quality, crack/wound/trail/UI/destruction or other semantics, physical fracture correctness, animation quality, accessibility, production readiness, GPU parity, target-device realtime performance, or cross-browser/cross-machine bitwise determinism'}};
+          await writeFile(root+'browser-raster-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_path_break_svg_browser_observation=PASS');
+          console.log(`browser=${browserVersion}`);console.log(`different_pixels=${raster.different_pixels}`);console.log(`different_channels=${raster.different_channels}`);console.log(`sum_abs_channel_delta=${raster.sum_abs_channel_delta}`);console.log(`zero_rgba_fnv1a32=${raster.zero_rgba_fnv1a32}`);console.log(`active_rgba_fnv1a32=${raster.active_rgba_fnv1a32}`);
+          NODE
+
+      - name: Upload complete path-break SVG browser proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-path-break-svg-browser-proof
+          path: creative-render/build/vfx-path-break-svg-browser/
+          if-no-files-found: warn
