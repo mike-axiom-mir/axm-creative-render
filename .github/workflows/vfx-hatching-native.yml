@@ -1,0 +1,183 @@
+name: vfx-hatching-native
+
+on:
+  pull_request:
+    paths:
+      - 'src/vfx_hatching_native_bridge.mjs'
+      - 'src/vfx_hatching_native_cli.mjs'
+      - 'tests/vfx_hatching_native_bridge.test.mjs'
+      - '.github/workflows/vfx-hatching-native.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/vfx_hatching_native_bridge.mjs'
+      - 'src/vfx_hatching_native_cli.mjs'
+      - 'tests/vfx_hatching_native_bridge.test.mjs'
+      - '.github/workflows/vfx-hatching-native.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-current-vfx-hatching-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: f86ce66b6558551f52a3e1efaf2f2d99127d1d76
+          path: visual-effect-fabric
+
+      - name: Checkout pinned Render Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Prepare retained attempt evidence
+        run: |
+          base=creative-render/build/vfx-hatching-native
+          mkdir -p "$base"
+          cat > "$base/donor-revisions.json" <<'EOF'
+          {
+            "visual_effect_fabric": "f86ce66b6558551f52a3e1efaf2f2d99127d1d76",
+            "render_fabric": "6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b"
+          }
+          EOF
+          cat > "$base/attempt-inputs.json" <<'EOF'
+          {
+            "explicit_choice": "hatchingRequest.valueMode",
+            "variants": ["normal", "invert"],
+            "field": {"seed": 20260917, "frequency": 2.75, "octaves": 4, "lacunarity": 2, "gain": 0.52, "offset": [0.07, -0.11]},
+            "flow": {"mode": "tangent", "sampleStep": 0.015625, "strength": 1},
+            "treatment": {"minLengthCell": 0.15, "maxLengthCell": 0.85, "responsePower": 1.25, "fallbackAngleTurns": 0.125},
+            "derived_grid": {"columns": 48, "rows": 32, "strokeCount": 1536}
+          }
+          EOF
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Build retained hatching sources, stroke sets, SVGs and native scenes
+        run: |
+          base=creative-render/build/vfx-hatching-native
+          node creative-render/src/vfx_hatching_native_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --vfx-revision f86ce66b6558551f52a3e1efaf2f2d99127d1d76 \
+            --normal-field-source "$base/normal-field-source.json" \
+            --invert-field-source "$base/invert-field-source.json" \
+            --normal-flow-source "$base/normal-flow-source.json" \
+            --invert-flow-source "$base/invert-flow-source.json" \
+            --normal-hatching-source "$base/normal-hatching-source.json" \
+            --invert-hatching-source "$base/invert-hatching-source.json" \
+            --normal-stroke-set "$base/normal-stroke-set.json" \
+            --invert-stroke-set "$base/invert-stroke-set.json" \
+            --normal-svg "$base/normal.svg" \
+            --invert-svg "$base/invert.svg" \
+            --normal-state "$base/normal-state.json" \
+            --invert-state "$base/invert-state.json" \
+            --normal-scene "$base/normal.axmscene" \
+            --invert-scene "$base/invert.axmscene" \
+            --receipt "$base/hatching.receipt.json"
+
+      - name: Independently assert authority, lineage and budget honesty
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { parseScene } from './creative-render/src/creative_scene_operator.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-hatching-native/';
+          const [receiptBytes, donorBytes] = await Promise.all([readFile(base+'hatching.receipt.json'), readFile(base+'donor-revisions.json')]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          const donors=JSON.parse(donorBytes.toString('utf8'));
+          if(r.contract!=='AXM_CREATIVE_VFX_HATCHING_NATIVE_RECEIPT'||r.version!==1)throw new Error('hatching receipt contract drifted');
+          if(r.donor.revision!==donors.visual_effect_fabric||r.donor.graph_id!=='fx.stylize.field-guided-hatching2d-static-svg'||r.donor.graph_version!=='0.1.0')throw new Error('current VFX hatching graph was not exercised');
+          if(r.caller_authority.explicit_choice!=='hatchingRequest.valueMode'||r.caller_authority.scalar_field_source_held_exactly_constant!==true||r.caller_authority.vector_flow_source_held_exactly_constant!==true||r.caller_authority.caller_requests_mutated!==false)throw new Error('hatching authority boundary failed');
+          if(r.variants.normal.field_source.hash!==r.variants.invert.field_source.hash||r.variants.normal.flow_source.hash!==r.variants.invert.flow_source.hash)throw new Error('valueMode rewrote retained field/flow source identity');
+          if(r.comparison.stroke_count!==1536||r.comparison.length_difference_count<1||r.comparison.same_centers_field_values_flow_and_directions!==true)throw new Error('hatching comparison evidence failed');
+          for(const name of ['normal','invert']){
+            const row=r.variants[name];
+            if(row.stroke_set.stroke_count!==1536||row.stroke_set.derived!==true||row.stroke_set.rebuildable!==true)throw new Error(`stroke-set contract drifted for ${name}`);
+            if(row.working_set_budget.exact_1536_matches_roomy_16384!==true||row.working_set_budget.insufficient_1535_failed_loudly!==true||!row.working_set_budget.insufficient_1535_error.includes('hatching stroke budget exceeded'))throw new Error(`budget gate failed for ${name}`);
+            const [field,flow,treatment,strokes,svg,sceneBytes]=await Promise.all([
+              readFile(base+name+'-field-source.json'),readFile(base+name+'-flow-source.json'),readFile(base+name+'-hatching-source.json'),readFile(base+name+'-stroke-set.json'),readFile(base+name+'.svg'),readFile(base+name+'.axmscene')
+            ]);
+            if(row.field_source.bytes_sha256!==sha(field)||row.flow_source.bytes_sha256!==sha(flow)||row.hatching_source.bytes_sha256!==sha(treatment)||row.stroke_set.bytes_sha256!==sha(strokes)||row.donor_svg.bytes_sha256!==sha(svg)||row.native_scene.bytes_sha256!==sha(sceneBytes))throw new Error(`retained byte binding drifted for ${name}`);
+            const scene=parseScene(sceneBytes.toString('utf8'));
+            if(scene.triangles.length!==3072)throw new Error(`native hatching scene triangle count drifted for ${name}`);
+          }
+          const evidence={contract:'AXM_CREATIVE_VFX_HATCHING_INDEPENDENT_EVIDENCE',version:1,creative_receipt_sha256:sha(receiptBytes),donor_revisions:donors,gates:{caller_authority:'PASS',caller_neutral_repeat:'PASS',field_and_flow_exactly_retained:'PASS',sufficient_budget_noncreative:'PASS',insufficient_budget_fails_loudly:'PASS',derived_stroke_lineage:'PASS',replaceable_svg_and_native_realizations:'PASS',consumer_semantics_not_assigned:'PASS'}};
+          await writeFile(base+'independent-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_hatching_independent_evidence=PASS');
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify both hatching observations
+        run: |
+          base=creative-render/build/vfx-hatching-native
+          for name in normal invert; do
+            cat > "$base/$name.axmrender" <<EOF
+          AXM_RENDER_REQUEST 1
+          scene $name.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output $name.ppm
+          EOF
+            render-fabric/build/axm-render --request "$base/$name.axmrender" --receipt "$base/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$base/$name.axmrender" "$base/$name.axmreceipt"
+          done
+
+      - name: Bind derived hatching strokes to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const base='creative-render/build/vfx-hatching-native/';
+          const receipt=JSON.parse(await readFile(base+'hatching.receipt.json','utf8'));
+          const renders={};
+          for(const name of ['normal','invert']){
+            const [scene,request,renderReceipt,frame]=await Promise.all([readFile(base+name+'.axmscene'),readFile(base+name+'.axmrender'),readFile(base+name+'.axmreceipt'),readFile(base+name+'.ppm')]);
+            renders[name]={scene_sha256:sha(scene),request_sha256:sha(request),render_receipt_sha256:sha(renderReceipt),frame_sha256:sha(frame),frame_bytes:frame.length};
+            if(renders[name].scene_sha256!==receipt.variants[name].native_scene.bytes_sha256)throw new Error(`native scene binding drifted for ${name}`);
+          }
+          if(renders.normal.frame_sha256===renders.invert.frame_sha256)throw new Error('explicit hatching valueMode difference did not reach native pixels');
+          await writeFile(base+'native-render-evidence.json',JSON.stringify({contract:'AXM_CREATIVE_VFX_HATCHING_NATIVE_RENDER_EVIDENCE',version:1,renders,frames_differ:true,claim:'pixel difference proves propagation only, not aesthetic quality'},null,2)+'\n');
+          console.log('vfx_hatching_native_pixels=PASS');
+          console.log(`normal_frame_sha256=${renders.normal.frame_sha256}`);
+          console.log(`invert_frame_sha256=${renders.invert.frame_sha256}`);
+          NODE
+
+      - name: Retain proof evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-hatching-native-proof
+          path: creative-render/build/vfx-hatching-native
+          if-no-files-found: warn
+          retention-days: 30
