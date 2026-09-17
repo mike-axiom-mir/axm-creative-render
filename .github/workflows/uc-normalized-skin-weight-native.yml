@@ -1,0 +1,414 @@
+name: uc-normalized-skin-weight-native
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: uc-normalized-skin-weight-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-uc-normalized-skin-weight-native:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Universal Creation
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-universal-creation
+          ref: 9332e3455092cf8b0011fd69607d99a1e82a2dc8
+          path: universal-creation
+
+      - name: Checkout pinned Render Fabric
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Use Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Prepare retained proof directory
+        run: mkdir -p creative-render/build/uc-normalized-skin-weight
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run current UC receiver parity selftests
+        run: |
+          node universal-creation/capabilities/platform-hands/shared/asset-hands/tests/normalized-skin-weight-receiver-selftest.js
+          (cd universal-creation && python -m unittest tests.test_game_pose_runtime.GamePoseRuntimeTests.test_normalized_integer_weights_are_supported -v)
+
+      - name: Build normalized-weight receiver parity bundle and derived scenes
+        run: |
+          node <<'NODE'
+          'use strict';
+          const assert = require('assert');
+          const crypto = require('crypto');
+          const fs = require('fs');
+          const path = require('path');
+          const Rig = require('./universal-creation/capabilities/platform-hands/shared/asset-hands/rigged-gltf-codec.js');
+
+          const OUT = path.resolve('creative-render/build/uc-normalized-skin-weight');
+          fs.mkdirSync(OUT, { recursive: true });
+          const sha = value => crypto.createHash('sha256').update(value).digest('hex');
+          const jsonBytes = value => Buffer.from(JSON.stringify(value));
+
+          function unpack(bytes) {
+            bytes = new Uint8Array(bytes);
+            const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+            assert.strictEqual(view.getUint32(0, true), 0x46546c67);
+            assert.strictEqual(view.getUint32(4, true), 2);
+            const jsonLength = view.getUint32(12, true);
+            const json = JSON.parse(new TextDecoder().decode(bytes.subarray(20, 20 + jsonLength)).trim());
+            const binHeader = 20 + jsonLength;
+            const binLength = view.getUint32(binHeader, true);
+            return {
+              json,
+              binary: bytes.slice(binHeader + 8, binHeader + 8 + binLength),
+            };
+          }
+
+          function repack(json, binary) {
+            const jsonRaw = new TextEncoder().encode(JSON.stringify(json));
+            const jsonLength = Math.ceil(jsonRaw.length / 4) * 4;
+            const binLength = Math.ceil(binary.length / 4) * 4;
+            const out = new Uint8Array(12 + 8 + jsonLength + 8 + binLength);
+            const view = new DataView(out.buffer);
+            view.setUint32(0, 0x46546c67, true);
+            view.setUint32(4, 2, true);
+            view.setUint32(8, out.length, true);
+            view.setUint32(12, jsonLength, true);
+            view.setUint32(16, 0x4e4f534a, true);
+            out.fill(32, 20, 20 + jsonLength);
+            out.set(jsonRaw, 20);
+            const binHeader = 20 + jsonLength;
+            view.setUint32(binHeader, binLength, true);
+            view.setUint32(binHeader + 4, 0x004e4942, true);
+            out.set(binary, binHeader + 8);
+            return out;
+          }
+
+          // Mirror the donor's own bounded receiver fixture exactly. The first
+          // failed Creative Render attempt compared quantized one-hot weights
+          // against Rig.pack's different default float weights. We retain that
+          // failed Actions evidence and repair the fixture, not the parity gate.
+          function weightVariant(sourceBytes, componentType, normalized) {
+            const parsed = unpack(sourceBytes);
+            const json = JSON.parse(JSON.stringify(parsed.json));
+            const binary = parsed.binary.slice();
+            const primitive = json.meshes[0].primitives[0];
+            const accessor = json.accessors[primitive.attributes.WEIGHTS_0];
+            const bufferView = json.bufferViews[accessor.bufferView];
+            const count = accessor.count;
+            const offset = (bufferView.byteOffset || 0) + (accessor.byteOffset || 0);
+            const data = new DataView(binary.buffer, binary.byteOffset, binary.byteLength);
+            const maximum = componentType === 5121 ? 255 : componentType === 5123 ? 65535 : 1;
+            const size = componentType === 5121 ? 1 : componentType === 5123 ? 2 : 4;
+            accessor.componentType = componentType;
+            if (normalized === undefined) delete accessor.normalized;
+            else accessor.normalized = normalized;
+            delete bufferView.byteStride;
+            for (let vertex = 0; vertex < count; vertex += 1) {
+              const row = vertex < Math.floor(count / 2) ? [1, 0, 0, 0] : [0, 1, 0, 0];
+              for (let component = 0; component < 4; component += 1) {
+                const at = offset + (vertex * 4 + component) * size;
+                if (componentType === 5121) data.setUint8(at, row[component] * maximum);
+                else if (componentType === 5123) data.setUint16(at, row[component] * maximum, true);
+                else data.setFloat32(at, row[component], true);
+              }
+            }
+            return repack(json, binary);
+          }
+
+          const componentCount = type => ({ SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4, MAT4: 16 })[type];
+          const componentSize = type => ({ 5120: 1, 5121: 1, 5122: 2, 5123: 2, 5125: 4, 5126: 4 })[type];
+          function readNumber(data, at, type) {
+            if (type === 5120) return data.getInt8(at);
+            if (type === 5121) return data.getUint8(at);
+            if (type === 5122) return data.getInt16(at, true);
+            if (type === 5123) return data.getUint16(at, true);
+            if (type === 5125) return data.getUint32(at, true);
+            if (type === 5126) return data.getFloat32(at, true);
+            throw new Error(`unsupported accessor component type ${type}`);
+          }
+          function readAccessor(parsed, accessorIndex) {
+            const accessor = parsed.json.accessors[accessorIndex];
+            const bufferView = parsed.json.bufferViews[accessor.bufferView];
+            const width = componentCount(accessor.type);
+            const size = componentSize(accessor.componentType);
+            if (!width || !size) throw new Error(`unsupported accessor ${accessor.type}/${accessor.componentType}`);
+            const stride = bufferView.byteStride || width * size;
+            const start = (bufferView.byteOffset || 0) + (accessor.byteOffset || 0);
+            const data = new DataView(parsed.binary.buffer, parsed.binary.byteOffset, parsed.binary.byteLength);
+            const out = [];
+            for (let row = 0; row < accessor.count; row += 1) {
+              const values = [];
+              for (let column = 0; column < width; column += 1) {
+                values.push(readNumber(data, start + row * stride + column * size, accessor.componentType));
+              }
+              out.push(width === 1 ? values[0] : values);
+            }
+            return out;
+          }
+          function fmt(value) {
+            const n = Math.abs(value) < 0.00000005 ? 0 : Number(value.toFixed(7));
+            return String(n);
+          }
+          function sceneFromGlb(bytes) {
+            const parsed = unpack(bytes);
+            const primitive = parsed.json.meshes[0].primitives[0];
+            const positions = readAccessor(parsed, primitive.attributes.POSITION);
+            const indices = readAccessor(parsed, primitive.indices);
+            const lines = ['AXM_SCENE 1'];
+            for (let at = 0; at < indices.length; at += 3) {
+              const a = positions[indices[at]];
+              const b = positions[indices[at + 1]];
+              const c = positions[indices[at + 2]];
+              lines.push(`triangle ${a.map(fmt).join(' ')}  ${b.map(fmt).join(' ')}  ${c.map(fmt).join(' ')}  82 190 214`);
+            }
+            return {
+              bytes: Buffer.from(lines.join('\n') + '\n'),
+              triangles: indices.length / 3,
+              vertices: positions.length,
+            };
+          }
+
+          const packed = Rig.pack(
+            Rig.makeClip({ fps: 8, duration: 1, id: 'normalized-weight-receiver-fixture' }),
+          );
+          const packedSeed = new Uint8Array(packed.bytes);
+          const control = weightVariant(packedSeed, 5126, undefined);
+          const u8 = weightVariant(packedSeed, 5121, true);
+          const u16 = weightVariant(packedSeed, 5123, true);
+          const controlBefore = sha(control);
+
+          // Write bounded attempt inputs before any proof assertion so a later
+          // failure leaves inspectable evidence for the always-upload step.
+          const representations = { control, normalized_u8: u8, normalized_u16: u16 };
+          for (const [name, bytes] of Object.entries(representations)) {
+            fs.writeFileSync(path.join(OUT, `${name}.glb`), bytes);
+          }
+          fs.writeFileSync(path.join(OUT, 'attempt-inputs.json'), JSON.stringify({
+            contract: 'AXM_CREATIVE_UC_NORMALIZED_SKIN_WEIGHT_ATTEMPT_INPUTS',
+            version: 1,
+            donor_revision: '9332e3455092cf8b0011fd69607d99a1e82a2dc8',
+            packed_seed_sha256: sha(packedSeed),
+            canonical_control_sha256: controlBefore,
+            normalized_u8_sha256: sha(u8),
+            normalized_u16_sha256: sha(u16),
+            authority: {
+              canonical_control: 'CALLER_SELECTED_READ_ONLY_SOURCE',
+              normalized_encodings: 'DERIVED_REBUILDABLE_RECEIVER_CHALLENGES',
+            },
+          }, null, 2) + '\n');
+
+          const inspections = {
+            control: Rig.inspect(control),
+            normalized_u8: Rig.inspect(u8),
+            normalized_u16: Rig.inspect(u16),
+          };
+          for (const [name, inspection] of Object.entries(inspections)) {
+            assert.strictEqual(inspection.pass, true, `${name}: ${inspection.errors.join('; ')}`);
+            assert.strictEqual(inspection.weightSumsPass, true, `${name}: normalized weight sums failed`);
+            assert.strictEqual(inspection.jointIndicesPass, true, `${name}: joint indices failed`);
+            assert.strictEqual(inspection.deformation.pass, true, `${name}: deformation failed`);
+            assert.strictEqual(inspection.deformation.changed, true, `${name}: deformation did not change`);
+          }
+          assert.deepStrictEqual(inspections.normalized_u8.deformation.samples, inspections.control.deformation.samples);
+          assert.deepStrictEqual(inspections.normalized_u16.deformation.samples, inspections.control.deformation.samples);
+          assert.strictEqual(sha(control), controlBefore, 'canonical control GLB changed in memory');
+          assert.notStrictEqual(sha(control), sha(u8), 'normalized U8 representation must remain a distinct derived encoding');
+          assert.notStrictEqual(sha(control), sha(u16), 'normalized U16 representation must remain a distinct derived encoding');
+          assert.notStrictEqual(sha(u8), sha(u16), 'U8 and U16 derived encodings unexpectedly match');
+
+          const invalids = [
+            ['u8-without-normalized', weightVariant(packedSeed, 5121, false)],
+            ['u16-without-normalized', weightVariant(packedSeed, 5123, undefined)],
+            ['u16-null-normalized', weightVariant(packedSeed, 5123, null)],
+            ['normalized-float', weightVariant(packedSeed, 5126, true)],
+          ];
+          const invalidEvidence = [];
+          for (const [name, bytes] of invalids) {
+            fs.writeFileSync(path.join(OUT, `rejected-${name}.glb`), bytes);
+            const inspection = Rig.inspect(bytes);
+            assert.strictEqual(inspection.pass, false, `${name} unexpectedly passed`);
+            assert(inspection.errors.includes('WEIGHTS_0 accessor invalid'), `${name}: ${inspection.errors.join('; ')}`);
+            invalidEvidence.push({ name, sha256: sha(bytes), errors: inspection.errors });
+          }
+          assert.strictEqual(sha(control), controlBefore, 'invalid receiver challenges rewrote canonical control');
+
+          const scenes = {
+            control: sceneFromGlb(control),
+            normalized_u8: sceneFromGlb(u8),
+            normalized_u16: sceneFromGlb(u16),
+          };
+          assert.strictEqual(scenes.control.triangles, packed.triangles);
+          assert.strictEqual(scenes.control.vertices, packed.vertices);
+          assert.deepStrictEqual(scenes.normalized_u8.bytes, scenes.control.bytes, 'normalized U8 altered static geometry observation');
+          assert.deepStrictEqual(scenes.normalized_u16.bytes, scenes.control.bytes, 'normalized U16 altered static geometry observation');
+          for (const [name, scene] of Object.entries(scenes)) {
+            fs.writeFileSync(path.join(OUT, `${name}.axmscene`), scene.bytes);
+          }
+
+          const samplesSha = sha(jsonBytes(inspections.control.deformation.samples));
+          const bundle = {
+            contract: 'AXM_CREATIVE_UC_NORMALIZED_SKIN_WEIGHT_RECEIVER_BUNDLE',
+            version: 1,
+            donor: {
+              repository: 'mike-axiom-mir/axm-universal-creation',
+              revision: '9332e3455092cf8b0011fd69607d99a1e82a2dc8',
+              capability: 'rigged-gltf-codec.inspect normalized WEIGHTS_0 receiver parity',
+            },
+            canonical_source: {
+              role: 'CALLER_SELECTED_READ_ONLY_CONTROL',
+              glb_sha256: controlBefore,
+              bytes: control.length,
+              unchanged_after_all_challenges: sha(control) === controlBefore,
+            },
+            derived_encodings: {
+              normalized_u8: { role: 'DERIVED_REPRESENTATION_CANDIDATE', glb_sha256: sha(u8), bytes: u8.length, component_type: 5121, normalized: true },
+              normalized_u16: { role: 'DERIVED_REPRESENTATION_CANDIDATE', glb_sha256: sha(u16), bytes: u16.length, component_type: 5123, normalized: true },
+            },
+            receiver: {
+              control_pass: inspections.control.pass,
+              u8_pass: inspections.normalized_u8.pass,
+              u16_pass: inspections.normalized_u16.pass,
+              weight_sums_pass: [inspections.control.weightSumsPass, inspections.normalized_u8.weightSumsPass, inspections.normalized_u16.weightSumsPass].every(Boolean),
+              joint_indices_pass: [inspections.control.jointIndicesPass, inspections.normalized_u8.jointIndicesPass, inspections.normalized_u16.jointIndicesPass].every(Boolean),
+              deformation_pass: [inspections.control.deformation.pass, inspections.normalized_u8.deformation.pass, inspections.normalized_u16.deformation.pass].every(Boolean),
+              deformation_changed: inspections.control.deformation.changed,
+              deformation_samples_sha256: samplesSha,
+              u8_samples_equal_control: JSON.stringify(inspections.normalized_u8.deformation.samples) === JSON.stringify(inspections.control.deformation.samples),
+              u16_samples_equal_control: JSON.stringify(inspections.normalized_u16.deformation.samples) === JSON.stringify(inspections.control.deformation.samples),
+            },
+            invalid_rejections: invalidEvidence,
+            derived_static_observation: {
+              scene_sha256: sha(scenes.control.bytes),
+              byte_identical_across_encodings: true,
+              triangles: scenes.control.triangles,
+              vertices: scenes.control.vertices,
+              albedo_rgb8: [82, 190, 214],
+            },
+            authority: {
+              canonical_glb: 'CALLER_SELECTED_READ_ONLY_SOURCE',
+              normalized_encodings: 'DERIVED_REBUILDABLE_RECEIVER_CHALLENGES',
+              deformation_evidence: 'DERIVED_DONOR_INSPECTION_EVIDENCE',
+              axm_scenes: 'DERIVED_REPLACEABLE_STATIC_OBSERVATIONS',
+            },
+          };
+          fs.writeFileSync(path.join(OUT, 'donor-bundle.json'), JSON.stringify(bundle, null, 2) + '\n');
+          console.log('uc_normalized_skin_weight_receiver=PASS');
+          console.log(`control_glb_sha256=${controlBefore}`);
+          console.log(`normalized_u8_glb_sha256=${sha(u8)}`);
+          console.log(`normalized_u16_glb_sha256=${sha(u16)}`);
+          console.log(`deformation_samples_sha256=${samplesSha}`);
+          console.log(`derived_scene_sha256=${sha(scenes.control.bytes)}`);
+          console.log(`triangles=${scenes.control.triangles}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify all receiver representations
+        run: |
+          base=creative-render/build/uc-normalized-skin-weight
+          for name in control normalized_u8 normalized_u16; do
+            cat > "$base/$name.axmrender" <<EOF
+          AXM_RENDER_REQUEST 1
+          scene $name.axmscene
+          backend axm.native.cpu.reference
+          width 320
+          height 180
+          format ppm-rgb8
+          output $name.ppm
+          EOF
+            render-fabric/build/axm-render --request "$base/$name.axmrender" --receipt "$base/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$base/$name.axmrender" "$base/$name.axmreceipt"
+          done
+
+      - name: Bind normalized receiver parity to native pixel evidence
+        run: |
+          node <<'NODE'
+          'use strict';
+          const crypto = require('crypto');
+          const fs = require('fs');
+          const path = require('path');
+          const OUT = path.resolve('creative-render/build/uc-normalized-skin-weight');
+          const sha = value => crypto.createHash('sha256').update(value).digest('hex');
+          const bundleBytes = fs.readFileSync(path.join(OUT, 'donor-bundle.json'));
+          const bundle = JSON.parse(bundleBytes);
+          if (bundle.donor.revision !== '9332e3455092cf8b0011fd69607d99a1e82a2dc8') throw new Error('UC donor revision drifted');
+          if (bundle.canonical_source.unchanged_after_all_challenges !== true) throw new Error('canonical GLB authority drifted');
+          if (bundle.receiver.u8_samples_equal_control !== true || bundle.receiver.u16_samples_equal_control !== true) throw new Error('normalized receiver deformation parity drifted');
+          if (bundle.invalid_rejections.length !== 4) throw new Error('fail-closed receiver evidence drifted');
+
+          const renders = {};
+          for (const name of ['control', 'normalized_u8', 'normalized_u16']) {
+            const scene = fs.readFileSync(path.join(OUT, `${name}.axmscene`));
+            const request = fs.readFileSync(path.join(OUT, `${name}.axmrender`));
+            const receipt = fs.readFileSync(path.join(OUT, `${name}.axmreceipt`));
+            const frame = fs.readFileSync(path.join(OUT, `${name}.ppm`));
+            renders[name] = {
+              scene_sha256: sha(scene),
+              request_sha256: sha(request),
+              receipt_sha256: sha(receipt),
+              frame_sha256: sha(frame),
+              frame_bytes: frame.length,
+            };
+          }
+          const sceneSet = new Set(Object.values(renders).map(row => row.scene_sha256));
+          const frameSet = new Set(Object.values(renders).map(row => row.frame_sha256));
+          if (sceneSet.size !== 1) throw new Error('weight encoding changed derived static scene bytes');
+          if (frameSet.size !== 1) throw new Error('weight encoding changed native static frame bytes');
+          if (renders.control.scene_sha256 !== bundle.derived_static_observation.scene_sha256) throw new Error('rendered scene no longer matches retained donor bundle');
+
+          const evidence = {
+            contract: 'AXM_CREATIVE_UC_NORMALIZED_SKIN_WEIGHT_NATIVE_EVIDENCE',
+            version: 1,
+            donor: bundle.donor,
+            donor_bundle_sha256: sha(bundleBytes),
+            canonical_source: bundle.canonical_source,
+            receiver: bundle.receiver,
+            invalid_rejections: bundle.invalid_rejections,
+            renders,
+            render_receipt_replay: { control: 'PASS', normalized_u8: 'PASS', normalized_u16: 'PASS' },
+            authority: bundle.authority,
+            truth_boundary: {
+              proves: 'the pinned current UC rigged-glTF receiver accepts normalized UNSIGNED_BYTE and UNSIGNED_SHORT WEIGHTS_0 for this bounded rig fixture, preserves exact donor CPU deformation samples relative to the float control, rejects four malformed encoding choices, leaves the caller-selected control bytes unchanged, and preserves identical derived static geometry through independently receipt-verified native Render Fabric pixels',
+              does_not_prove: 'arbitrary rigs or weight distributions, arbitrary quantization error bounds, deformed-mesh native rendering, general glTF engine import, GPU skinning, external Khronos conformance, animation quality, aesthetic quality, real-time performance, or cross-machine bitwise determinism',
+            },
+          };
+          fs.writeFileSync(path.join(OUT, 'native-evidence.json'), JSON.stringify(evidence, null, 2) + '\n');
+          console.log('uc_normalized_skin_weight_native=PASS');
+          console.log(`native_frame_sha256=${renders.control.frame_sha256}`);
+          console.log(`scene_sha256=${renders.control.scene_sha256}`);
+          NODE
+
+      - name: Upload complete normalized skin-weight native proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-uc-normalized-skin-weight-native-proof
+          path: creative-render/build/uc-normalized-skin-weight/
+          if-no-files-found: warn
