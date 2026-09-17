@@ -1,0 +1,166 @@
+name: vfx-path-flow-svg-browser
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vfx-path-flow-svg-browser-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-vfx-path-flow-svg-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: dd4f471b4ec2ab29d18079754ed73e3457e8c3de
+          path: visual-effect-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Prepare retained proof directory
+        run: |
+          root=creative-render/build/vfx-path-flow-svg-browser
+          mkdir -p "$root"
+          cat > "$root/donor-revisions.json" <<'EOF'
+          {
+            "visual_effect_fabric": "dd4f471b4ec2ab29d18079754ed73e3457e8c3de"
+          }
+          EOF
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Build exact zero and active path-flow donor SVG artifacts
+        run: |
+          root=creative-render/build/vfx-path-flow-svg-browser
+          node creative-render/src/vfx_path_flow_svg_browser_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --vfx-revision dd4f471b4ec2ab29d18079754ed73e3457e8c3de \
+            --source-paths "$root/source-paths.json" \
+            --displacement-receipt "$root/displacement.receipt.json" \
+            --zero-state "$root/zero-state.json" \
+            --active-state "$root/active-state.json" \
+            --zero-svg "$root/zero.svg" \
+            --active-svg "$root/active.svg" \
+            --probe "$root/browser-probe.html" \
+            --receipt "$root/build.receipt.json"
+
+      - name: Independently assert source authority and new static-SVG lineage
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-path-flow-svg-browser/';
+          const [receiptBytes,sourceBytes,displacementReceiptBytes,zeroStateBytes,activeStateBytes,zeroSvg,activeSvg,probe,donorsBytes]=await Promise.all([
+            readFile(root+'build.receipt.json'),readFile(root+'source-paths.json'),readFile(root+'displacement.receipt.json'),readFile(root+'zero-state.json'),readFile(root+'active-state.json'),readFile(root+'zero.svg'),readFile(root+'active.svg'),readFile(root+'browser-probe.html'),readFile(root+'donor-revisions.json'),
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8')),d=JSON.parse(donorsBytes.toString('utf8')),v=r.visual_effect_fabric,base=JSON.parse(displacementReceiptBytes.toString('utf8'));
+          if(d.visual_effect_fabric!=='dd4f471b4ec2ab29d18079754ed73e3457e8c3de'||v.donor_revision!==d.visual_effect_fabric)throw new Error('pinned current VFX revision evidence drifted');
+          if(r.contract!=='AXM_CREATIVE_VFX_PATH_FLOW_SVG_BROWSER_BUILD_RECEIPT'||r.version!==1)throw new Error('path-flow SVG build receipt drifted');
+          if(v.displacement_graph_id!=='fx.path.flow-displace2d'||v.displacement_graph_version!=='0.1.0')throw new Error('base path-flow displacement graph was not exercised');
+          if(v.static_graph_id!=='fx.path.flow-displaced-static-svg'||v.static_graph_version!=='0.1.0'||v.static_hand_id!=='fx.path.flow-static-svg-realize'||v.static_hand_version!=='0.1.0')throw new Error('current path-flow static SVG donor boundary was not exercised');
+          if(base.donor.revision!==d.visual_effect_fabric||base.donor.graph_id!==v.displacement_graph_id)throw new Error('retained displacement receipt lost donor identity');
+          if(v.caller_neutral_repeat_verification!=='PASS')throw new Error('caller-neutral repeat verification failed');
+          if(v.zero.amplitude!==0||v.zero.max_displacement!==0)throw new Error('zero path-flow did not remain exact no-op');
+          if(!(v.active.amplitude>0)||!(v.active.max_displacement>0))throw new Error('active path-flow did not displace derived geometry');
+          if(v.zero.path_count!==2||v.active.path_count!==2||v.zero.point_count!==10||v.active.point_count!==10)throw new Error('bounded path-flow fixture cardinality drifted');
+          if(v.zero.path_set_hash===v.active.path_set_hash||v.zero.displacement_source_hash===v.active.displacement_source_hash)throw new Error('explicit amplitude choice did not change derived identities');
+          if(v.zero.derived_from_path_set_hash!==v.zero.path_set_hash||v.active.derived_from_path_set_hash!==v.active.path_set_hash)throw new Error('donor SVG lost selected derived path-set lineage');
+          if(r.outputs.source_paths.sha256!==sha(sourceBytes)||r.outputs.displacement_receipt.sha256!==sha(displacementReceiptBytes)||r.outputs.zero_state.sha256!==sha(zeroStateBytes)||r.outputs.active_state.sha256!==sha(activeStateBytes)||r.outputs.zero_svg.sha256!==sha(zeroSvg)||r.outputs.active_svg.sha256!==sha(activeSvg)||r.outputs.browser_probe_html.sha256!==sha(probe))throw new Error('retained proof byte binding drifted');
+          if(r.outputs.zero_svg.sha256===r.outputs.active_svg.sha256||r.comparison.donor_svg_changes!==true||r.comparison.zero_is_exact_noop!==true||r.comparison.active_displaces_paths!==true||r.comparison.both_svgs_bound_to_selected_derived_sets!==true)throw new Error('zero/active donor SVG comparison gate failed');
+          if(v.truth_boundary.browser_pixels_proven!==false||v.truth_boundary.aesthetic_quality_proven!==false||v.truth_boundary.readability_proven!==false)throw new Error('pre-browser truth boundary was promoted');
+          const evidence={contract:'AXM_CREATIVE_VFX_PATH_FLOW_SVG_INDEPENDENT_EVIDENCE',version:1,build_receipt_sha256:sha(receiptBytes),donor_revision:d.visual_effect_fabric,retained_sources:v.retained_sources,zero_path_set_hash:v.zero.path_set_hash,active_path_set_hash:v.active.path_set_hash,gates:{caller_source_authority:'PASS',zero_exact_noop:'PASS',active_derived_displacement:'PASS',static_svg_rebuild_lineage:'PASS',svg_selected_set_lineage:'PASS',caller_neutral_repeat:'PASS',pre_browser_truth_boundary:'PASS'}};
+          await writeFile(root+'independent-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_path_flow_svg_lineage=PASS');
+          console.log(`path_source_hash=${v.retained_sources.path_source_hash}`);
+          console.log(`zero_path_set_hash=${v.zero.path_set_hash}`);
+          console.log(`active_path_set_hash=${v.active.path_set_hash}`);
+          console.log(`zero_svg_sha256=${r.outputs.zero_svg.sha256}`);
+          console.log(`active_svg_sha256=${r.outputs.active_svg.sha256}`);
+          NODE
+
+      - name: Locate installed browser and retain exact version
+        run: |
+          root=creative-render/build/vfx-path-flow-svg-browser
+          browser="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || true)"
+          if [ -z "$browser" ]; then
+            echo "No supported Chromium-family browser is installed on this runner" >&2
+            exit 1
+          fi
+          printf '%s\n' "$browser" > "$root/browser-path.txt"
+          "$browser" --version | tee "$root/browser-version.txt"
+
+      - name: Rasterize exact donor SVGs through the real headless browser
+        run: |
+          root=creative-render/build/vfx-path-flow-svg-browser
+          browser="$(cat "$root/browser-path.txt")"
+          probe_uri="file://$(realpath "$root/browser-probe.html")"
+          "$browser" --headless=new --no-sandbox --disable-gpu --allow-file-access-from-files --virtual-time-budget=5000 --dump-dom "$probe_uri" > "$root/browser-probe.dump.html"
+          grep -q 'data-axm-done="true"' "$root/browser-probe.dump.html"
+          "$browser" --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=640,420 --screenshot="$PWD/$root/zero-browser.png" "file://$(realpath "$root/zero.svg")"
+          "$browser" --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=640,420 --screenshot="$PWD/$root/active-browser.png" "file://$(realpath "$root/active.svg")"
+          test -s "$root/zero-browser.png"
+          test -s "$root/active-browser.png"
+
+      - name: Verify and bind raw browser pixel evidence
+        run: |
+          root=creative-render/build/vfx-path-flow-svg-browser
+          node creative-render/src/vfx_path_flow_svg_browser_cli.mjs verify-browser \
+            --dump "$root/browser-probe.dump.html" \
+            --probe "$root/browser-probe.html" \
+            --build-receipt "$root/build.receipt.json" \
+            --browser-version "$root/browser-version.txt" \
+            --zero-screenshot "$root/zero-browser.png" \
+            --active-screenshot "$root/active-browser.png" \
+            --out "$root/browser-raster-evidence.json"
+
+      - name: Assert browser evidence remains observational and derived
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          const root='creative-render/build/vfx-path-flow-svg-browser/';
+          const e=JSON.parse(await readFile(root+'browser-raster-evidence.json','utf8'));
+          if(e.contract!=='AXM_CREATIVE_VFX_PATH_FLOW_SVG_BROWSER_RASTER_EVIDENCE'||e.version!==1)throw new Error('browser evidence contract drifted');
+          if(e.raster.schema!=='axm.creative-render.path-flow-browser-svg-raster-evidence/v1'||e.raster.width!==640||e.raster.height!==420||e.raster.pixel_count!==268800||e.raster.rgba_bytes!==1075200)throw new Error('browser raster contract drifted');
+          if(e.raster.zero_svg_sha256!==e.zero_svg_sha256||e.raster.active_svg_sha256!==e.active_svg_sha256)throw new Error('browser raster lost exact SVG byte identity');
+          if(e.raster.different_pixels<1||e.raster.different_channels<1||e.raster.sum_abs_channel_delta<1||e.raster.max_channel_delta<1)throw new Error('active path-flow difference was not observable in raw browser pixels');
+          if(e.raster.zero_rgba_fnv1a32===e.raster.active_rgba_fnv1a32)throw new Error('browser raw-pixel checksums unexpectedly match');
+          if(e.browser.network_required!==false||e.authority.browser_rgba_and_screenshots!=='DERIVED_BROWSER_OUTPUT')throw new Error('browser observer authority boundary drifted');
+          if(!e.truth_boundary.does_not_prove.includes('aesthetically better')||!e.truth_boundary.does_not_prove.includes('cross-browser'))throw new Error('browser truth boundary weakened');
+          console.log('vfx_path_flow_svg_browser_observation=PASS');
+          console.log(`browser=${e.browser.version}`);
+          console.log(`different_pixels=${e.raster.different_pixels}`);
+          console.log(`different_channels=${e.raster.different_channels}`);
+          console.log(`sum_abs_channel_delta=${e.raster.sum_abs_channel_delta}`);
+          console.log(`zero_rgba_fnv1a32=${e.raster.zero_rgba_fnv1a32}`);
+          console.log(`active_rgba_fnv1a32=${e.raster.active_rgba_fnv1a32}`);
+          NODE
+
+      - name: Upload complete path-flow SVG browser proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-path-flow-svg-browser-proof
+          path: creative-render/build/vfx-path-flow-svg-browser/
+          if-no-files-found: warn
