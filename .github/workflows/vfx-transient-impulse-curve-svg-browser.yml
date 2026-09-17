@@ -1,0 +1,176 @@
+name: vfx-transient-impulse-curve-svg-browser
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vfx-transient-impulse-curve-svg-browser-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-vfx-transient-impulse-curve-svg-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: f15534b25f6b1e7ea0fa02d85c142d4901c70fcf
+          path: visual-effect-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Prepare retained proof directory
+        run: |
+          root=creative-render/build/vfx-transient-impulse-curve-svg-browser
+          mkdir -p "$root"
+          cat > "$root/donor-revisions.json" <<'EOF'
+          {
+            "visual_effect_fabric": "f15534b25f6b1e7ea0fa02d85c142d4901c70fcf"
+          }
+          EOF
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Build ordinary, constant-one and shaped curve SVG donor artifacts
+        run: |
+          root=creative-render/build/vfx-transient-impulse-curve-svg-browser
+          node creative-render/src/vfx_transient_impulse_curve_svg_browser_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --vfx-revision f15534b25f6b1e7ea0fa02d85c142d4901c70fcf \
+            --impulse "$root/caller-impulse.json" \
+            --noop-curve "$root/caller-noop-curve.json" \
+            --shaped-curve "$root/caller-shaped-curve.json" \
+            --base-state "$root/base-state.json" \
+            --noop-state "$root/noop-state.json" \
+            --shaped-state "$root/shaped-state.json" \
+            --base-svg "$root/base.svg" \
+            --noop-svg "$root/noop.svg" \
+            --shaped-svg "$root/shaped.svg" \
+            --probe "$root/browser-probe.html" \
+            --receipt "$root/build.receipt.json"
+
+      - name: Independently assert authority, lineage and exact no-op continuity
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-transient-impulse-curve-svg-browser/';
+          const names=['caller-impulse','caller-noop-curve','caller-shaped-curve','base-state','noop-state','shaped-state','base','noop','shaped','browser-probe','donor-revisions'];
+          const bytes=Object.fromEntries(await Promise.all(names.map(async name=>{
+            const ext=name==='browser-probe'?'.html':name==='base'||name==='noop'||name==='shaped'?'.svg':name==='donor-revisions'?'.json':'.json';
+            return [name,await readFile(root+name+ext)];
+          })));
+          const receiptBytes=await readFile(root+'build.receipt.json');
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          const donors=JSON.parse(bytes['donor-revisions'].toString('utf8'));
+          const v=r.visual_effect_fabric;
+          if(donors.visual_effect_fabric!=='f15534b25f6b1e7ea0fa02d85c142d4901c70fcf'||v.donor_revision!==donors.visual_effect_fabric)throw new Error('pinned current VFX revision evidence drifted');
+          if(r.contract!=='AXM_CREATIVE_VFX_TRANSIENT_IMPULSE_CURVE_SVG_BROWSER_BUILD_RECEIPT'||r.version!==1)throw new Error('curve SVG browser build receipt drifted');
+          if(v.base_graph.id!=='fx.transient-impulse-static'||v.base_graph.version!=='0.1.0')throw new Error('ordinary transient static donor graph was not exercised');
+          if(v.curve_graph.id!=='fx.transient-impulse.parameter-curve-static'||v.curve_graph.version!=='0.1.0')throw new Error('current curve-selected transient static donor graph was not exercised');
+          const expected=['fx.impulse.event-normalize','fx.impulse.field-build','fx.impulse.temporal-envelope','fx.animation.parameter-curve-source-normalize','fx.impulse.parameter-curve-modulate-envelope','fx.impulse.parameter-curve-static-svg-realize'];
+          if(JSON.stringify(v.curve_graph.hand_ids)!==JSON.stringify(expected))throw new Error('curve-selected transient static Hand boundary drifted');
+          if(v.caller_neutral_repeat_verification!=='PASS')throw new Error('caller-neutral repeat verification failed');
+          if(!v.canonical_event_hash||!v.field_geometry_hash||!v.base_envelope_hash)throw new Error('retained event/field/base-envelope lineage is incomplete');
+          if(!(v.selected_envelopes.shaped_intensity_change_count>0))throw new Error('shaped curve did not change separately derived envelope intensity');
+          if(r.outputs.impulse.sha256!==sha(bytes['caller-impulse'])||r.outputs.noop_curve.sha256!==sha(bytes['caller-noop-curve'])||r.outputs.shaped_curve.sha256!==sha(bytes['caller-shaped-curve']))throw new Error('caller request byte binding drifted');
+          if(r.outputs.base_state.sha256!==sha(bytes['base-state'])||r.outputs.noop_state.sha256!==sha(bytes['noop-state'])||r.outputs.shaped_state.sha256!==sha(bytes['shaped-state']))throw new Error('derived state byte binding drifted');
+          if(r.outputs.base_svg.sha256!==sha(bytes.base)||r.outputs.noop_svg.sha256!==sha(bytes.noop)||r.outputs.shaped_svg.sha256!==sha(bytes.shaped)||r.outputs.browser_probe_html.sha256!==sha(bytes['browser-probe']))throw new Error('SVG/probe byte binding drifted');
+          if(r.outputs.base_svg.sha256!==r.outputs.noop_svg.sha256||Buffer.compare(bytes.base,bytes.noop)!==0||r.comparison.constant_one_svg_byte_identity!==true)throw new Error('constant-one curve stopped being exact ordinary-donor SVG no-op');
+          if(r.outputs.base_svg.sha256===r.outputs.shaped_svg.sha256||Buffer.compare(bytes.base,bytes.shaped)===0||r.comparison.shaped_svg_distinct!==true)throw new Error('shaped curve did not change disposable SVG realization');
+          if(v.truth_boundary.browser_pixels_proven!==false||v.truth_boundary.aesthetic_quality_proven!==false||v.truth_boundary.timing_feel_proven!==false)throw new Error('pre-browser truth boundary was promoted');
+          const evidence={contract:'AXM_CREATIVE_VFX_TRANSIENT_IMPULSE_CURVE_SVG_INDEPENDENT_EVIDENCE',version:1,build_receipt_sha256:sha(receiptBytes),donor_revision:donors.visual_effect_fabric,canonical_event_hash:v.canonical_event_hash,field_geometry_hash:v.field_geometry_hash,base_envelope_hash:v.base_envelope_hash,curve_sources:v.curve_sources,selected_envelopes:v.selected_envelopes,svg_sha256:{base:r.outputs.base_svg.sha256,noop:r.outputs.noop_svg.sha256,shaped:r.outputs.shaped_svg.sha256},gates:{caller_request_authority:'PASS',canonical_event_continuity:'PASS',base_field_envelope_continuity:'PASS',constant_one_svg_exact_noop:'PASS',shaped_derived_envelope_changes:'PASS',shaped_svg_distinct:'PASS',caller_neutral_repeat:'PASS',pre_browser_truth_boundary:'PASS'}};
+          await writeFile(root+'independent-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_transient_impulse_curve_svg_lineage=PASS');
+          console.log(`canonical_event_hash=${v.canonical_event_hash}`);
+          console.log(`base_envelope_hash=${v.base_envelope_hash}`);
+          console.log(`base_svg_sha256=${r.outputs.base_svg.sha256}`);
+          console.log(`shaped_svg_sha256=${r.outputs.shaped_svg.sha256}`);
+          NODE
+
+      - name: Locate installed browser and retain exact version
+        run: |
+          root=creative-render/build/vfx-transient-impulse-curve-svg-browser
+          browser="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || true)"
+          if [ -z "$browser" ]; then
+            echo "No supported Chromium-family browser is installed on this runner" >&2
+            exit 1
+          fi
+          printf '%s\n' "$browser" > "$root/browser-path.txt"
+          "$browser" --version | tee "$root/browser-version.txt"
+
+      - name: Rasterize exact donor SVGs through the real headless browser
+        run: |
+          root=creative-render/build/vfx-transient-impulse-curve-svg-browser
+          browser="$(cat "$root/browser-path.txt")"
+          probe_uri="file://$(realpath "$root/browser-probe.html")"
+          "$browser" --headless=new --no-sandbox --disable-gpu --allow-file-access-from-files --virtual-time-budget=5000 --dump-dom "$probe_uri" > "$root/browser-probe.dump.html"
+          grep -q 'data-axm-done="true"' "$root/browser-probe.dump.html"
+          for name in base noop shaped; do
+            "$browser" --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=640,420 --screenshot="$PWD/$root/$name-browser.png" "file://$(realpath "$root/$name.svg")"
+            test -s "$root/$name-browser.png"
+          done
+
+      - name: Verify and bind raw browser pixel evidence
+        run: |
+          root=creative-render/build/vfx-transient-impulse-curve-svg-browser
+          node creative-render/src/vfx_transient_impulse_curve_svg_browser_cli.mjs verify-browser \
+            --dump "$root/browser-probe.dump.html" \
+            --probe "$root/browser-probe.html" \
+            --build-receipt "$root/build.receipt.json" \
+            --browser-version "$root/browser-version.txt" \
+            --base-screenshot "$root/base-browser.png" \
+            --noop-screenshot "$root/noop-browser.png" \
+            --shaped-screenshot "$root/shaped-browser.png" \
+            --out "$root/browser-raster-evidence.json"
+
+      - name: Assert browser evidence remains observational and derived
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          const root='creative-render/build/vfx-transient-impulse-curve-svg-browser/';
+          const e=JSON.parse(await readFile(root+'browser-raster-evidence.json','utf8'));
+          if(e.contract!=='AXM_CREATIVE_VFX_TRANSIENT_IMPULSE_CURVE_SVG_BROWSER_RASTER_EVIDENCE'||e.version!==1)throw new Error('browser evidence contract drifted');
+          if(e.raster.schema!=='axm.creative-render.transient-impulse-curve-browser-svg-raster-evidence/v1'||e.raster.width!==640||e.raster.height!==420||e.raster.pixel_count!==268800||e.raster.rgba_bytes!==1075200)throw new Error('browser raster contract drifted');
+          if(e.svg_sha256.base!==e.svg_sha256.noop||e.raster.svg_sha256.base!==e.svg_sha256.base||e.raster.svg_sha256.noop!==e.svg_sha256.noop||e.raster.svg_sha256.shaped!==e.svg_sha256.shaped)throw new Error('browser raster lost exact SVG identity');
+          if(e.raster.base_noop.different_pixels!==0||e.raster.base_noop.different_channels!==0||e.raster.base_noop.sum_abs_channel_delta!==0||e.raster.base_noop.max_channel_delta!==0||e.raster.rgba_fnv1a32.base!==e.raster.rgba_fnv1a32.noop)throw new Error('constant-one curve invented browser-pixel change');
+          if(e.raster.base_shaped.different_pixels<1||e.raster.base_shaped.different_channels<1||e.raster.base_shaped.sum_abs_channel_delta<1||e.raster.base_shaped.max_channel_delta<1||e.raster.rgba_fnv1a32.base===e.raster.rgba_fnv1a32.shaped)throw new Error('shaped curve was not observed in raw browser pixels');
+          if(e.browser.network_required!==false||e.authority.browser_rgba_and_screenshots!=='DERIVED_BROWSER_OUTPUT')throw new Error('browser observer authority boundary drifted');
+          if(!e.truth_boundary.does_not_prove.includes('visually better')||!e.truth_boundary.does_not_prove.includes('cross-browser'))throw new Error('browser truth boundary weakened');
+          console.log('vfx_transient_impulse_curve_svg_browser_observation=PASS');
+          console.log(`browser=${e.browser.version}`);
+          console.log(`base_noop_different_pixels=${e.raster.base_noop.different_pixels}`);
+          console.log(`base_shaped_different_pixels=${e.raster.base_shaped.different_pixels}`);
+          console.log(`base_shaped_different_channels=${e.raster.base_shaped.different_channels}`);
+          console.log(`base_shaped_sum_abs_channel_delta=${e.raster.base_shaped.sum_abs_channel_delta}`);
+          console.log(`base_rgba_fnv1a32=${e.raster.rgba_fnv1a32.base}`);
+          console.log(`shaped_rgba_fnv1a32=${e.raster.rgba_fnv1a32.shaped}`);
+          NODE
+
+      - name: Upload complete transient impulse curve SVG browser proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-transient-impulse-curve-svg-browser-proof
+          path: creative-render/build/vfx-transient-impulse-curve-svg-browser/
+          if-no-files-found: warn
