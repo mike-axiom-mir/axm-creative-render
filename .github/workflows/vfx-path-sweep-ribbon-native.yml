@@ -1,0 +1,210 @@
+name: vfx-path-sweep-ribbon-native
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vfx-path-sweep-ribbon-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-vfx-path-sweep-ribbon-native:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: 4d0dc716a81d93560676ba36acad983638e4699f
+          path: visual-effect-fabric
+
+      - name: Checkout pinned current Render Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Retain attempt identity before gates
+        run: |
+          mkdir -p creative-render/build/vfx-path-sweep-ribbon
+          cat > creative-render/build/vfx-path-sweep-ribbon/attempt.json <<EOF
+          {
+            "creative_render_head": "${GITHUB_SHA}",
+            "visual_effect_fabric_revision": "4d0dc716a81d93560676ba36acad983638e4699f",
+            "render_fabric_revision": "6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b",
+            "lane": "vfx-path-sweep-ribbon-native"
+          }
+          EOF
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run pinned current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Execute current VFX path-sweep-ribbon donor and build disposable native strip
+        run: |
+          root=creative-render/build/vfx-path-sweep-ribbon
+          node creative-render/src/vfx_path_sweep_ribbon_native_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --vfx-revision 4d0dc716a81d93560676ba36acad983638e4699f \
+            --scene "$root/scene.axmscene" \
+            --donor-state "$root/donor-state.json" \
+            --receipt "$root/path-sweep-ribbon.receipt.json"
+
+      - name: Assert retained truth, donor boundary reuse, bounded work, and tamper rejection
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { pathToFileURL } from 'node:url';
+          import { resolve } from 'node:path';
+
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-path-sweep-ribbon/';
+          const [receiptBytes,stateBytes,sceneBytes]=await Promise.all([
+            readFile(root+'path-sweep-ribbon.receipt.json'),
+            readFile(root+'donor-state.json'),
+            readFile(root+'scene.axmscene'),
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          const state=JSON.parse(stateBytes.toString('utf8'));
+
+          if(r.contract!=='AXM_CREATIVE_VFX_PATH_SWEEP_RIBBON_NATIVE_RECEIPT'||r.version!==1)throw new Error('path-sweep ribbon receipt drifted');
+          const v=r.visual_effect_fabric;
+          if(v.revision!=='4d0dc716a81d93560676ba36acad983638e4699f'||v.donor_graph_reused!==true)throw new Error('pinned current path-sweep ribbon donor not exercised');
+          if(v.graph_id!=='fx.geometry.path-sweep-ribbon2d'||v.graph_version!=='0.1.0')throw new Error('path-sweep ribbon graph identity drifted');
+          if(v.caller_neutral_replay!=='PASS'||v.caller_request_unchanged!==true||v.caller_paths_unchanged!==true)throw new Error('path-sweep ribbon caller/source boundary failed');
+
+          const s=v.retained_sweep_source;
+          if(s.schema!=='axm.path-sweep-frame-source/v0.1'||s.algorithm!=='polyline-bisector-sweep-frame2d/v0.1'||s.profile!=='symmetric-ribbon2d'||s.frame_policy!=='left-normal-bisector2d'||s.reversal_fallback!=='outgoing-segment'||s.width_mode!=='constant-half-width')throw new Error('retained path-sweep semantics drifted');
+          const frame=v.selected_frame_set;
+          if(frame.schema!=='axm.path-sweep-frame-set/v0.1'||frame.derived!==true||frame.rebuildable!==true||frame.sourceHash!==s.source_hash||frame.pathSourceHash!==s.path_source_hash)throw new Error('derived frame lineage drifted');
+          const ribbon=v.selected_ribbon_set;
+          if(ribbon.schema!=='axm.path-sweep-ribbon-set/v0.1'||ribbon.derived!==true||ribbon.rebuildable!==true||ribbon.sweepSourceHash!==s.source_hash||ribbon.pathSourceHash!==s.path_source_hash||ribbon.frameSetHash!==frame.frameSetHash)throw new Error('derived ribbon lineage drifted');
+          if(ribbon.pointCount!==s.point_count||ribbon.pathCount!==s.path_count)throw new Error('path-sweep source/ribbon cardinality drifted');
+          const sem=ribbon.semantics;
+          if(sem.algorithm!=='frame-normal-ribbon-boundary2d/v0.1'||sem.profile!=='symmetric-ribbon2d'||sem.boundaryPolicy!=='center-plus-minus-normal-half-width'||sem.clipping!=='none'||sem.joinAuthority!=='none'||sem.capAuthority!=='none'||sem.triangulation!=='none'||sem.rendererAuthority!=='none'||sem.meshAuthority!=='none')throw new Error('ribbon donor authority boundary drifted');
+          if(r.outputs.scene.sha256!==sha(sceneBytes)||r.outputs.donor_state.sha256!==sha(stateBytes))throw new Error('path-sweep ribbon output bytes are not receipt-bound');
+
+          if(!Object.values(r.challenges).every(Boolean))throw new Error('one or more retained path-sweep ribbon challenges failed');
+          const o=r.native_observer;
+          if(o.geometry_uses_only_donor_derived_ribbon_boundaries!==true||o.boundary_offsets_rederived_by_consumer!==false||o.consumer_triangulation_policy_applied!==true||o.triangulation_authority_scope!=='DERIVED_REPLACEABLE_OBSERVER_ONLY'||o.canonical_mesh_authority_acquired!==false||o.renderer_authority_acquired!==false||o.consumer_semantics_assigned!==false)throw new Error('native observer authority boundary drifted');
+          const t=r.truth_boundary;
+          if(t.caller_paths_authority!=='RETAINED_CALLER_SOURCE_TRUTH'||t.sweep_source_authority!=='RETAINED_VFX_SOURCE'||t.frame_set_authority!=='DERIVED_REBUILDABLE_VFX_BODY'||t.ribbon_set_authority!=='DERIVED_REBUILDABLE_VFX_BODY'||t.native_scene_receipt_pixels_authority!=='DERIVED_REPLACEABLE_OBSERVER_BODIES'||t.creative_render_triangulation_scope!=='DERIVED_REPLACEABLE_OBSERVER_ONLY')throw new Error('path-sweep ribbon authority labels drifted');
+          for(const key of ['canonical_mesh_authority_acquired','boundary_offsets_rederived_by_creative_render','consumer_semantics_proven','general_strip_validity_proven','corner_join_quality_proven','self_intersection_safety_proven','physical_sweep_proven','aesthetic_quality_proven','accessibility_proven','realtime_performance_proven','gpu_equivalence_proven','cross_machine_bitwise_determinism_proven']){
+            if(t[key]!==false)throw new Error(`unsupported claim promoted: ${key}`);
+          }
+          for(const key of ['donor_join_authority','donor_cap_authority','donor_triangulation_authority','donor_renderer_authority','donor_mesh_authority']){
+            if(t[key]!=='NONE')throw new Error(`donor authority promoted: ${key}`);
+          }
+
+          const donor=await import(pathToFileURL(resolve('visual-effect-fabric/hand-lab/src/path-sweep-ribbon2d.mjs')).href);
+          if(donor.validatePathSweepRibbonSet(state,ribbon,{maxPoints:4096})!==true)throw new Error('retained donor state no longer validates selected ribbon set');
+
+          const challenges={
+            contract:'AXM_CREATIVE_VFX_PATH_SWEEP_RIBBON_NATIVE_CHALLENGES',
+            version:1,
+            caller_neutral_replay:'PASS',
+            retained_paths_unchanged:'PASS',
+            exact_vs_roomy_donor_capacity:'PASS',
+            one_below_donor_capacity:'REJECTED_AS_REQUIRED',
+            exact_vs_roomy_observer_capacity:'PASS',
+            one_below_observer_capacity:'REJECTED_AS_REQUIRED',
+            zero_width_exact_collapse:'PASS',
+            graph_4097_points_over_default_4096:'REJECTED_AS_REQUIRED',
+            self_consistent_ribbon_tamper:'REJECTED_AS_REQUIRED',
+            self_consistent_frame_tamper_laundering:'REJECTED_AS_REQUIRED',
+            self_consistent_retained_semantic_forgery:'REJECTED_AS_REQUIRED'
+          };
+          await writeFile(root+'challenges.json',JSON.stringify(challenges,null,2)+'\n');
+          console.log('vfx_path_sweep_ribbon_truth_gates=PASS');
+          console.log(`path_source_hash=${s.path_source_hash}`);
+          console.log(`sweep_source_hash=${s.source_hash}`);
+          console.log(`frame_set_hash=${frame.frameSetHash}`);
+          console.log(`ribbon_set_hash=${ribbon.ribbonSetHash}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify disposable ribbon observation
+        run: |
+          root=creative-render/build/vfx-path-sweep-ribbon
+          cat > "$root/scene.axmrender" <<'EOF_REQ'
+          AXM_RENDER_REQUEST 1
+          scene scene.axmscene
+          backend axm.native.cpu.reference
+          width 640
+          height 420
+          format ppm-rgb8
+          output scene.ppm
+          EOF_REQ
+          render-fabric/build/axm-render --request "$root/scene.axmrender" --receipt "$root/scene.axmreceipt"
+          render-fabric/build/axm-render-verify-receipt "$root/scene.axmrender" "$root/scene.axmreceipt"
+
+      - name: Bind donor ribbon to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile,writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-path-sweep-ribbon/';
+          const receipt=JSON.parse(await readFile(root+'path-sweep-ribbon.receipt.json','utf8'));
+          const [scene,request,renderReceipt,frame]=await Promise.all([
+            readFile(root+'scene.axmscene'),
+            readFile(root+'scene.axmrender'),
+            readFile(root+'scene.axmreceipt'),
+            readFile(root+'scene.ppm'),
+          ]);
+          if(sha(scene)!==receipt.outputs.scene.sha256)throw new Error('native renderer did not consume receipt-bound scene bytes');
+          if(frame.length<=32)throw new Error('native frame is unexpectedly empty');
+          const evidence={
+            contract:'AXM_CREATIVE_VFX_PATH_SWEEP_RIBBON_NATIVE_PIXEL_EVIDENCE',
+            version:1,
+            retained_path_source_hash:receipt.visual_effect_fabric.retained_sweep_source.path_source_hash,
+            retained_sweep_source_hash:receipt.visual_effect_fabric.retained_sweep_source.source_hash,
+            derived_frame_set_hash:receipt.visual_effect_fabric.selected_frame_set.frameSetHash,
+            derived_ribbon_set_hash:receipt.visual_effect_fabric.selected_ribbon_set.ribbonSetHash,
+            scene_sha256:sha(scene),
+            request_sha256:sha(request),
+            render_receipt_sha256:sha(renderReceipt),
+            frame_sha256:sha(frame),
+            frame_bytes:frame.length,
+            native_receipt_independently_verified:true,
+            pixels_authority:'DERIVED_REPLACEABLE_OBSERVER_BODY',
+            general_strip_validity_proven:false,
+            aesthetic_quality_proven:false
+          };
+          await writeFile(root+'native-pixel-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_path_sweep_ribbon_native_pixel_binding=PASS');
+          console.log(`frame_sha256=${evidence.frame_sha256}`);
+          NODE
+
+      - name: Upload retained path-sweep ribbon proof even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-path-sweep-ribbon-native-proof
+          path: creative-render/build/vfx-path-sweep-ribbon
+          if-no-files-found: warn
+          retention-days: 30
