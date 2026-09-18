@@ -1,6 +1,6 @@
 {
   "name": "axm-creative-render",
-  "version": "0.27.0",
+  "version": "0.28.0",
   "private": true,
   "type": "module",
   "description": "Experimental creative operators and explicit donor bridges over renderer-consumable canonical state.",
@@ -23,6 +23,7 @@
     "vfx-flicker-electric-native": "node src/vfx_flicker_electric_cli.mjs build",
     "vfx-direct-electric-flicker-native": "node src/vfx_direct_electric_flicker_cli.mjs build",
     "vfx-propagation-front-native": "node src/vfx_propagation_front_native_cli.mjs build",
+    "vfx-branch-propagation-native": "node src/vfx_branch_propagation_native_cli.mjs build",
     "vfx-electric-svg-browser": "node src/vfx_electric_svg_browser_cli.mjs build",
     "vfx-direct-electric-flicker-svg-browser": "node src/vfx_direct_electric_flicker_svg_browser_cli.mjs build",
     "uc-oriented-cut-render": "node src/uc_oriented_cut_cli.mjs build",
