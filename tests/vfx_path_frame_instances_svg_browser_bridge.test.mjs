@@ -36,7 +36,7 @@ test("path-frame instance browser probe embeds exact SVG identities", () => {
   assert.match(html, /path-frame instance SVG browser raster probe/);
   assert.match(html, /DENSE_SVG_SHA256/);
   assert.match(html, /SPARSE_SVG_SHA256/);
-  assert.match(html, /data\.axmDone/);
+  assert.match(html, /dataset\.axmDone/);
 });
 
 test("path-frame instance browser raster evidence is hash-bound and requires a measurable difference", () => {
