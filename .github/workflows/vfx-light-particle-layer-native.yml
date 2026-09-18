@@ -1,0 +1,179 @@
+name: vfx-light-particle-layer-native
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vfx-light-particle-layer-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-vfx-light-particle-layer-native:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact Creative Render candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: f4df757dd1cbb71a4e42eb4b4bcea2aebda2d128
+          path: visual-effect-fabric
+
+      - name: Checkout pinned Render Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Retain exact checkout identities before gates
+        env:
+          EXPECTED_CREATIVE_RENDER_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          root=creative-render/build/vfx-light-particle-layer
+          mkdir -p "$root"
+          creative_sha=$(git -C creative-render rev-parse HEAD)
+          vfx_sha=$(git -C visual-effect-fabric rev-parse HEAD)
+          render_sha=$(git -C render-fabric rev-parse HEAD)
+          cat > "$root/attempt.json" <<EOF
+          {"creative_render_head":"$creative_sha","visual_effect_fabric_revision":"$vfx_sha","render_fabric_revision":"$render_sha","lane":"vfx-light-particle-layer-native","authority":"EVIDENCE_ONLY"}
+          EOF
+          test "$creative_sha" = "$EXPECTED_CREATIVE_RENDER_SHA"
+          test "$vfx_sha" = "f4df757dd1cbb71a4e42eb4b4bcea2aebda2d128"
+          test "$render_sha" = "6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b"
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run pinned current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Execute current VFX light-particle layer-plan donor
+        run: |
+          root=creative-render/build/vfx-light-particle-layer
+          node creative-render/src/vfx_light_particle_layer_native_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --vfx-revision f4df757dd1cbb71a4e42eb4b4bcea2aebda2d128 \
+            --rays-under-scene "$root/rays-under-particles.axmscene" \
+            --particles-under-scene "$root/particles-under-rays.axmscene" \
+            --donor-state "$root/donor-state.json" \
+            --receipt "$root/light-particle-layer.receipt.json"
+
+      - name: Assert retained truth, order-only authority, budgets, and forgery rejection
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { pathToFileURL } from 'node:url';
+          import { resolve } from 'node:path';
+          const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-light-particle-layer/';
+          const [receiptBytes,stateBytes,underBytes,overBytes]=await Promise.all([
+            readFile(root+'light-particle-layer.receipt.json'),
+            readFile(root+'donor-state.json'),
+            readFile(root+'rays-under-particles.axmscene'),
+            readFile(root+'particles-under-rays.axmscene'),
+          ]);
+          const r=JSON.parse(receiptBytes);
+          const state=JSON.parse(stateBytes);
+          if (r.contract!=='AXM_CREATIVE_VFX_LIGHT_PARTICLE_LAYER_NATIVE_RECEIPT'||r.version!==1) throw new Error('receipt drifted');
+          const v=r.visual_effect_fabric;
+          if (v.revision!=='f4df757dd1cbb71a4e42eb4b4bcea2aebda2d128'||v.graph_id!=='fx.composition.light-particle-layer-plan2d'||v.graph_version!=='0.1.0'||v.donor_graph_reused!==true) throw new Error('current layer-plan donor not exercised');
+          if (v.caller_neutral_replay!=='PASS'||v.caller_inputs_unchanged!==true||v.nested_donor_states_unchanged_by_plan!==true) throw new Error('caller/source boundary failed');
+          if (r.outputs.rays_under_scene.sha256!==sha(underBytes)||r.outputs.particles_under_scene.sha256!==sha(overBytes)||r.outputs.donor_state.sha256!==sha(stateBytes)) throw new Error('proof outputs not receipt-bound');
+          const under=r.plans['rays-under-particles'];
+          const over=r.plans['particles-under-rays'];
+          for (const row of [under,over]) {
+            const p=row.plan;
+            if (p.schema!=='axm.effect-layer-plan2d/v0.1'||p.derived!==true||p.rebuildable!==true||p.layerAuthority!=='derived-order-only') throw new Error('plan authority drifted');
+            for (const key of ['blendModeAuthority','opacityAuthority','materialAuthority','rendererAuthority','consumerAuthority']) if (p[key]!=='none') throw new Error(`${key} authority was silently promoted`);
+            if (p.geometryMutation!=='none'||p.sourceMerge!=='none'||p.layers.length!==2) throw new Error('composition semantics drifted');
+            const o=row.native_observation;
+            if (o.source_geometry_mutated!==false||o.blend_mode_assigned!==false||o.opacity_assigned!==false||o.material_meaning_assigned!==false||o.depth_meaning_assigned!==false||o.consumer_semantics_assigned!==false||o.canonical_source_rewritten!==false||o.layer_order_consumed_from_donor_plan!==true||o.derived!==true||o.replaceable!==true) throw new Error('observer boundary drifted');
+          }
+          if (JSON.stringify(under.native_observation.groups.map(x=>x.layer_id))!==JSON.stringify(['light-rays','particles'])) throw new Error('rays-under order lost');
+          if (JSON.stringify(over.native_observation.groups.map(x=>x.layer_id))!==JSON.stringify(['particles','light-rays'])) throw new Error('particles-under order lost');
+          if (!Object.values(r.comparison).every((value,key)=> key < 4 ? value === true : true)) { /* explicit checks below */ }
+          if (r.comparison.same_ray_set_identity!==true||r.comparison.same_particle_set_identity!==true||r.comparison.plan_hashes_differ!==true||r.comparison.scene_bytes_differ_by_verified_group_order!==true) throw new Error('order comparison failed');
+          for (const key of ['blend_policy_added','opacity_policy_added','material_policy_added','depth_policy_added']) if (r.comparison[key]!==false) throw new Error(`observer invented ${key}`);
+          if (!Object.values(r.challenges).every(Boolean)) throw new Error('truth challenge failed');
+          const t=r.truth_boundary;
+          if (t.caller_requests_authority!=='RETAINED_CALLER_SOURCE_TRUTH'||t.vfx_light_and_particle_sources_authority!=='RETAINED_VFX_SOURCE_TRUTH'||t.vfx_ray_and_particle_sets_authority!=='DERIVED_REBUILDABLE_VFX_BODIES'||t.vfx_layer_plan_authority!=='DERIVED_REBUILDABLE_ORDER_ONLY'||t.native_scene_receipt_pixels_authority!=='DERIVED_REPLACEABLE_OBSERVER_BODIES') throw new Error('truth boundary authority drifted');
+          for (const key of ['source_truth_merged','blend_semantics_proven','opacity_semantics_proven','material_semantics_proven','depth_semantics_proven','consumer_semantics_proven','visual_order_effect_proven','aesthetic_quality_proven','accessibility_proven','realtime_performance_proven','gpu_equivalence_proven','browser_equivalence_proven','cross_machine_bitwise_determinism_proven']) if (t[key]!==false) throw new Error(`unsupported claim promoted: ${key}`);
+          const donor=await import(pathToFileURL(resolve('visual-effect-fabric/hand-lab/src/light-particle-layer-plan2d.mjs')).href);
+          const base=donor.makeLightParticleLayerPlanState(state.lightRayState,state.particleFlowState);
+          if (donor.validateLightParticleLayerPlan(base,state.plans['rays-under-particles'])!==true||donor.validateLightParticleLayerPlan(base,state.plans['particles-under-rays'])!==true) throw new Error('retained plans failed independent donor validation');
+          await writeFile(root+'truth-gates.json',JSON.stringify({contract:'AXM_CREATIVE_VFX_LIGHT_PARTICLE_LAYER_NATIVE_TRUTH_GATES',version:1,result:'PASS',challenges:r.challenges},null,2)+'\n');
+          console.log('vfx_light_particle_layer_truth_gates=PASS');
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render both verified order selections and independently verify receipts
+        run: |
+          set -euo pipefail
+          root=creative-render/build/vfx-light-particle-layer
+          for name in rays-under-particles particles-under-rays; do
+            cat > "$root/$name.axmrender" <<EOF
+          AXM_RENDER_REQUEST 1
+          scene $name.axmscene
+          backend axm.native.cpu.reference
+          width 640
+          height 420
+          format ppm-rgb8
+          output $name.ppm
+          EOF
+            render-fabric/build/axm-render --request "$root/$name.axmrender" --receipt "$root/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$root/$name.axmrender" "$root/$name.axmreceipt"
+          done
+
+      - name: Bind verified plan order to native renderer evidence without inventing visual semantics
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-light-particle-layer/';
+          const r=JSON.parse(await readFile(root+'light-particle-layer.receipt.json','utf8'));
+          const names=['rays-under-particles','particles-under-rays'];
+          const rows={};
+          for (const name of names) {
+            const [scene,request,receipt,frame]=await Promise.all([readFile(root+name+'.axmscene'),readFile(root+name+'.axmrender'),readFile(root+name+'.axmreceipt'),readFile(root+name+'.ppm')]);
+            if (frame.length<=32) throw new Error(`${name} native frame is empty`);
+            rows[name]={scene_sha256:sha(scene),render_request_sha256:sha(request),render_receipt_sha256:sha(receipt),frame_sha256:sha(frame)};
+          }
+          if (rows['rays-under-particles'].scene_sha256!==r.outputs.rays_under_scene.sha256||rows['particles-under-rays'].scene_sha256!==r.outputs.particles_under_scene.sha256) throw new Error('native renderer inputs lost proof binding');
+          const evidence={contract:'AXM_CREATIVE_VFX_LIGHT_PARTICLE_LAYER_NATIVE_RENDER_EVIDENCE',version:1,orders:rows,plan_hashes:{rays_under:r.plans['rays-under-particles'].plan.planHash,particles_under:r.plans['particles-under-rays'].plan.planHash},native_receipts_independently_verified:true,frames_identical:rows['rays-under-particles'].frame_sha256===rows['particles-under-rays'].frame_sha256,pixels_authority:'DERIVED_REPLACEABLE_OBSERVER_BODIES',visual_order_effect_proven:false,blend_semantics_proven:false,opacity_semantics_proven:false,material_semantics_proven:false,depth_semantics_proven:false,aesthetic_quality_proven:false};
+          await writeFile(root+'native-render-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_light_particle_layer_native_render_binding=PASS');
+          console.log(`frames_identical=${evidence.frames_identical}`);
+          NODE
+
+      - name: Upload retained light-particle layer proof even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-light-particle-layer-native-proof
+          path: creative-render/build/vfx-light-particle-layer
+          if-no-files-found: warn
+          retention-days: 30
