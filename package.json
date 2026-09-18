@@ -22,6 +22,7 @@
     "vfx-electric-field-modulation": "node src/vfx_electric_field_modulation_cli.mjs build",
     "vfx-flicker-electric-native": "node src/vfx_flicker_electric_cli.mjs build",
     "vfx-direct-electric-flicker-native": "node src/vfx_direct_electric_flicker_cli.mjs build",
+    "vfx-propagation-front-native": "node src/vfx_propagation_front_native_cli.mjs build",
     "vfx-electric-svg-browser": "node src/vfx_electric_svg_browser_cli.mjs build",
     "vfx-direct-electric-flicker-svg-browser": "node src/vfx_direct_electric_flicker_svg_browser_cli.mjs build",
     "uc-oriented-cut-render": "node src/uc_oriented_cut_cli.mjs build",
