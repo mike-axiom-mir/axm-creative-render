@@ -1,0 +1,164 @@
+name: vfx-direct-electric-flicker-svg-browser
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vfx-direct-electric-flicker-svg-browser-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-vfx-direct-electric-flicker-svg-browser:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: aaf7ca9889728ad821053d4e83ac2c6ec54a9b21
+          path: visual-effect-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Retain attempt identity before gates
+        run: |
+          root=creative-render/build/vfx-direct-electric-flicker-svg-browser
+          mkdir -p "$root"
+          cat > "$root/attempt.json" <<JSON
+          {
+            "schema": "axm.creative-render.retained-ci-attempt/v1",
+            "creative_render_head": "${GITHUB_SHA}",
+            "visual_effect_fabric_revision": "aaf7ca9889728ad821053d4e83ac2c6ec54a9b21",
+            "workflow": "vfx-direct-electric-flicker-svg-browser",
+            "failed_evidence_policy": "retain-complete-proof-directory-without-weakening-gates"
+          }
+          JSON
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run pinned current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Build source-verified phase SVG artifacts and browser probe
+        run: |
+          root=creative-render/build/vfx-direct-electric-flicker-svg-browser
+          node creative-render/src/vfx_direct_electric_flicker_svg_browser_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --phase-a-svg "$root/phase-a.svg" \
+            --phase-b-svg "$root/phase-b.svg" \
+            --zero-svg "$root/zero-strength.svg" \
+            --state "$root/vfx-states.json" \
+            --probe "$root/browser-probe.html" \
+            --receipt "$root/build.receipt.json"
+
+      - name: Assert retained authority and disposable SVG boundary before browser observation
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-direct-electric-flicker-svg-browser/';
+          const [receiptBytes,a,b,zero,probe]=await Promise.all([
+            readFile(root+'build.receipt.json'),
+            readFile(root+'phase-a.svg'),
+            readFile(root+'phase-b.svg'),
+            readFile(root+'zero-strength.svg'),
+            readFile(root+'browser-probe.html'),
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          if(r.contract!=='AXM_CREATIVE_VFX_DIRECT_ELECTRIC_FLICKER_SVG_BROWSER_BUILD_RECEIPT'||r.version!==1)throw new Error('direct electric flicker SVG browser build receipt drifted');
+          const v=r.visual_effect_fabric;
+          if(v.graph_id!=='fx.electric-storm.flicker-cycle-modulated-svg'||v.graph_version!=='0.1.0'||v.realization_hand_id!=='fx.electric.flicker-modulated-svg-realize')throw new Error('current donor-owned flicker SVG graph not exercised');
+          if(v.donor_graph_reused!==true||v.ordinary_svg_donor_reused!==true||v.caller_neutral_replay!=='PASS')throw new Error('donor reuse/caller neutrality gate failed');
+          if(!v.retained.electric_base_paths_hash||!v.retained.flicker_cycle_source_hash||!v.retained.electric_flicker_modulation_source_hash)throw new Error('retained source authority hashes are missing');
+          const i=v.invariants;
+          for(const key of ['prior_direct_modulation_identities_preserved','donor_rebuild_validation','same_retained_sources_between_phases','whole_cycle_selected_set_and_svg_identity_replay','zero_strength_exact_path_no_op','zero_strength_svg_byte_identical_to_ordinary_base_donor','self_consistent_derived_tamper_rejected_by_realization_hand','phase_svg_bytes_differ'])if(i[key]!==true)throw new Error(`invariant failed: ${key}`);
+          if(v.truth_boundary.modulated_path_sets_authority!=='DERIVED_REBUILDABLE_VFX_BODY'||v.truth_boundary.svg_realizations_authority!=='DERIVED_REPLACEABLE_VFX_BODY'||v.truth_boundary.browser_pixels_proven_before_browser_verification!==false)throw new Error('pre-browser authority boundary drifted');
+          if(v.truth_boundary.photosensitivity_or_comfort_proven!==false||v.truth_boundary.aesthetic_quality_proven!==false||v.truth_boundary.temporal_animation_proven!==false)throw new Error('unproven safety/quality/temporal claim was promoted');
+          if(r.outputs.phase_a_svg.sha256!==sha(a)||r.outputs.phase_b_svg.sha256!==sha(b)||r.outputs.zero_strength_svg.sha256!==sha(zero)||r.outputs.browser_probe_html.sha256!==sha(probe))throw new Error('build output byte binding drifted');
+          if(r.comparison.phase_svg_bytes_differ!==true||r.comparison.zero_strength_path_no_op!==true||r.comparison.zero_strength_svg_byte_identical_to_ordinary_base_donor!==true||r.comparison.self_consistent_derived_tamper_rejected!==true||r.comparison.prior_direct_modulation_identities_preserved!==true)throw new Error('comparison gate failed');
+          console.log('vfx_direct_electric_flicker_svg_lineage=PASS');
+          console.log(`phase_a_modulated_set_hash=${v.derived.phase_a.modulated_set_hash}`);
+          console.log(`phase_b_modulated_set_hash=${v.derived.phase_b.modulated_set_hash}`);
+          console.log(`phase_a_svg_sha256=${r.outputs.phase_a_svg.sha256}`);
+          console.log(`phase_b_svg_sha256=${r.outputs.phase_b_svg.sha256}`);
+          NODE
+
+      - name: Locate installed browser and retain exact version
+        run: |
+          root=creative-render/build/vfx-direct-electric-flicker-svg-browser
+          browser="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || true)"
+          if [ -z "$browser" ]; then
+            echo "No supported Chromium-family browser is installed on this runner" >&2
+            exit 1
+          fi
+          printf '%s\n' "$browser" > "$root/browser-path.txt"
+          "$browser" --version | tee "$root/browser-version.txt"
+
+      - name: Rasterize exact donor SVG phases through the real headless browser
+        run: |
+          root=creative-render/build/vfx-direct-electric-flicker-svg-browser
+          browser="$(cat "$root/browser-path.txt")"
+          probe_uri="file://$(realpath "$root/browser-probe.html")"
+          "$browser" --headless=new --no-sandbox --disable-gpu --allow-file-access-from-files --virtual-time-budget=5000 --dump-dom "$probe_uri" > "$root/browser-probe.dump.html"
+          grep -q 'data-axm-done="true"' "$root/browser-probe.dump.html"
+          "$browser" --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=1000,600 --screenshot="$PWD/$root/phase-a-browser.png" "file://$(realpath "$root/phase-a.svg")"
+          "$browser" --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=1000,600 --screenshot="$PWD/$root/phase-b-browser.png" "file://$(realpath "$root/phase-b.svg")"
+          test -s "$root/phase-a-browser.png"
+          test -s "$root/phase-b-browser.png"
+
+      - name: Verify and bind raw browser pixel evidence
+        run: |
+          root=creative-render/build/vfx-direct-electric-flicker-svg-browser
+          node creative-render/src/vfx_direct_electric_flicker_svg_browser_cli.mjs verify-browser \
+            --dump "$root/browser-probe.dump.html" \
+            --probe "$root/browser-probe.html" \
+            --build-receipt "$root/build.receipt.json" \
+            --browser-version "$root/browser-version.txt" \
+            --phase-a-screenshot "$root/phase-a-browser.png" \
+            --phase-b-screenshot "$root/phase-b-browser.png" \
+            --out "$root/browser-raster-evidence.json"
+
+      - name: Assert browser evidence stays observational and non-accepting
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          const root='creative-render/build/vfx-direct-electric-flicker-svg-browser/';
+          const e=JSON.parse(await readFile(root+'browser-raster-evidence.json','utf8'));
+          if(e.contract!=='AXM_CREATIVE_VFX_DIRECT_ELECTRIC_FLICKER_SVG_BROWSER_RASTER_EVIDENCE'||e.version!==1)throw new Error('browser evidence contract drifted');
+          if(e.raster.schema!=='axm.creative-render.browser-svg-raster-evidence/v1'||e.raster.width!==1000||e.raster.height!==600||e.raster.pixel_count!==600000||e.raster.rgba_bytes!==2400000)throw new Error('browser raster contract drifted');
+          if(e.raster.base_svg_sha256!==e.phase_a_svg_sha256||e.raster.modulated_svg_sha256!==e.phase_b_svg_sha256)throw new Error('browser raster lost exact phase SVG byte identity');
+          if(e.raster.different_pixels<1||e.raster.different_channels<1||e.raster.sum_abs_channel_delta<1||e.raster.max_channel_delta<1)throw new Error('distinct donor flicker phases were not observable in raw browser pixels');
+          if(e.raster.base_rgba_fnv1a32===e.raster.modulated_rgba_fnv1a32)throw new Error('browser raw-pixel checksums unexpectedly match');
+          if(e.browser.network_required!==false||e.authority.browser_rgba_and_screenshots!=='DERIVED_BROWSER_OUTPUT')throw new Error('browser observer authority boundary drifted');
+          if(!e.truth_boundary.does_not_prove.includes('photosensitivity')||!e.truth_boundary.does_not_prove.includes('aesthetic')||!e.truth_boundary.does_not_prove.includes('Firefox/WebKit'))throw new Error('browser truth boundary weakened');
+          console.log('vfx_direct_electric_flicker_svg_browser_observation=PASS');
+          console.log(`browser=${e.browser.version}`);
+          console.log(`different_pixels=${e.raster.different_pixels}`);
+          console.log(`different_channels=${e.raster.different_channels}`);
+          console.log(`sum_abs_channel_delta=${e.raster.sum_abs_channel_delta}`);
+          console.log(`phase_a_rgba_fnv1a32=${e.raster.base_rgba_fnv1a32}`);
+          console.log(`phase_b_rgba_fnv1a32=${e.raster.modulated_rgba_fnv1a32}`);
+          NODE
+
+      - name: Upload complete direct electric flicker SVG browser proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-direct-electric-flicker-svg-browser-proof
+          path: creative-render/build/vfx-direct-electric-flicker-svg-browser/
+          if-no-files-found: warn
