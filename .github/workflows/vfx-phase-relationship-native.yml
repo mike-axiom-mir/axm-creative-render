@@ -1,0 +1,276 @@
+name: vfx-phase-relationship-native
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vfx-phase-relationship-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-vfx-phase-relationship-native:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: c196d5c7120d600dbaa64474fb142dbba28b2ee8
+          path: visual-effect-fabric
+
+      - name: Checkout pinned current Render Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Retain attempt identity before gates
+        run: |
+          mkdir -p creative-render/build/vfx-phase-relationship
+          cat > creative-render/build/vfx-phase-relationship/attempt.json <<EOF
+          {
+            "creative_render_head": "${GITHUB_SHA}",
+            "visual_effect_fabric_revision": "c196d5c7120d600dbaa64474fb142dbba28b2ee8",
+            "render_fabric_revision": "6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b",
+            "lane": "vfx-phase-relationship-native"
+          }
+          EOF
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run pinned current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Execute current VFX phase-relationship donor
+        run: |
+          root=creative-render/build/vfx-phase-relationship
+          node creative-render/src/vfx_phase_relationship_native_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --vfx-revision c196d5c7120d600dbaa64474fb142dbba28b2ee8 \
+            --phase-a-scene "$root/phase-a.axmscene" \
+            --phase-b-scene "$root/phase-b.axmscene" \
+            --donor-state "$root/donor-state.json" \
+            --receipt "$root/phase-relationship.receipt.json"
+
+      - name: Assert source authority, exact loop closure, bounded work, and donor tamper rejection
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { pathToFileURL } from 'node:url';
+          import { resolve } from 'node:path';
+          import { phaseRelationshipSetToAxmScene } from './creative-render/src/vfx_phase_relationship_native_bridge.mjs';
+
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-phase-relationship/';
+          const [receiptBytes,stateBytes,sceneA,sceneB]=await Promise.all([
+            readFile(root+'phase-relationship.receipt.json'),
+            readFile(root+'donor-state.json'),
+            readFile(root+'phase-a.axmscene'),
+            readFile(root+'phase-b.axmscene'),
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          const state=JSON.parse(stateBytes.toString('utf8'));
+
+          if(r.contract!=='AXM_CREATIVE_VFX_PHASE_RELATIONSHIP_NATIVE_RECEIPT'||r.version!==1)throw new Error('phase relationship receipt drifted');
+          const v=r.visual_effect_fabric;
+          if(v.revision!=='c196d5c7120d600dbaa64474fb142dbba28b2ee8'||v.donor_graph_reused!==true)throw new Error('pinned current phase relationship donor not exercised');
+          if(v.graph_id!=='fx.animation.phase-relationship1d'||v.graph_version!=='0.1.0')throw new Error('phase relationship graph identity drifted');
+          if(v.caller_neutral_replay!=='PASS'||v.caller_request_unchanged!==true||v.initial_state_unchanged!==true)throw new Error('phase relationship caller/state boundary failed');
+
+          const retained=v.retained_phase_relationship_source;
+          if(retained.schema!=='axm.phase-relationship-source/v0.1')throw new Error('retained phase relationship source schema drifted');
+          if(retained.algorithm!=='integer-cycle-phase-relationship1d/v0.1'||retained.phase_domain!=='normalized-group-cycle'||retained.wrap_mode!=='loop')throw new Error('retained phase relationship semantics drifted');
+          if(retained.relationship_rule!=='channel-phase=wrap(group-phase*cycles-per-group+phase-offset)')throw new Error('retained relationship rule drifted');
+          if(retained.channel_count!==3)throw new Error('bounded three-channel fixture drifted');
+          if(v.canonical_ordering.equals_original_source_hash!==true||v.canonical_ordering.reversed_request_source_hash!==retained.source_hash)throw new Error('caller ordering changed retained source truth');
+
+          for(const selected of [r.selected.phase_a,r.selected.phase_b]){
+            if(selected.schema!=='axm.phase-relationship-set/v0.1'||selected.sourceHash!==retained.source_hash)throw new Error('derived phase set lineage drifted');
+            if(selected.derived!==true||selected.rebuildable!==true||selected.channels.length!==retained.channel_count)throw new Error('derived phase set authority/cardinality drifted');
+          }
+          if(r.selected.phase_a.phaseSetHash===r.selected.phase_b.phaseSetHash)throw new Error('selected group phases did not create distinct derived phase sets');
+          if(r.selected.whole_cycle_phase_a.equals_phase_a!==true||
+             r.selected.whole_cycle_phase_a.phase_set_hash!==r.selected.phase_a.phaseSetHash||
+             r.selected.whole_cycle_phase_a.wrapped_group_phase!==r.selected.phase_a.groupPhase)throw new Error('whole group cycle did not close exactly');
+
+          if(!Object.values(r.invariants).every(Boolean))throw new Error('phase relationship invariants failed');
+          if(r.native_observer.phase_a.geometry_sha256!==r.native_observer.phase_b.geometry_sha256)throw new Error('phase relationship observer geometry changed across phase');
+          if(r.native_observer.phase_a.output_sha256===r.native_observer.phase_b.output_sha256)throw new Error('derived channel phase did not reach observation bytes');
+          if(r.native_observer.difference_channel!=='NEUTRAL_GRAYSCALE_FROM_DONOR_DERIVED_CHANNEL_PHASE_ONLY')throw new Error('phase relationship observer difference channel drifted');
+          if(r.outputs.phase_a_scene.sha256!==sha(sceneA)||r.outputs.phase_b_scene.sha256!==sha(sceneB)||r.outputs.donor_state.sha256!==sha(stateBytes))throw new Error('phase relationship output byte binding drifted');
+
+          const truth=v.truth_boundary;
+          if(truth.retained_phase_relationship_source_authority!=='RETAINED_VFX_SOURCE'||
+             truth.selected_group_phase_authority!=='DERIVED_REBUILDABLE_SELECTION'||
+             truth.channel_phase_sets_authority!=='DERIVED_REBUILDABLE_VFX_BODY'||
+             truth.native_scenes_and_pixels_authority!=='DERIVED_REPLACEABLE_OBSERVER_BODIES')throw new Error('phase relationship authority labels drifted');
+          if(truth.animation_timing_proven!==false||truth.synchronization_quality_proven!==false||
+             truth.effect_semantics_proven!==false||truth.aesthetic_quality_proven!==false||
+             truth.accessibility_proven!==false||truth.realtime_performance_proven!==false)throw new Error('unsupported phase relationship claim was promoted');
+
+          const source=state.phaseRelationshipSource;
+          const sourceHash=state.phaseRelationshipSourceHash;
+          const exact=phaseRelationshipSetToAxmScene(source,sourceHash,r.selected.phase_b,{maxChannels:3});
+          const roomy=phaseRelationshipSetToAxmScene(source,sourceHash,r.selected.phase_b,{maxChannels:32});
+          if(exact.observation.output_sha256!==roomy.observation.output_sha256)throw new Error('structural observer channel capacity changed derived meaning');
+          let observerBudgetRejected=false;
+          try { phaseRelationshipSetToAxmScene(source,sourceHash,r.selected.phase_b,{maxChannels:2}); }
+          catch(error) { observerBudgetRejected=/channel budget exceeded: 3 > 2/.test(String(error)); }
+          if(!observerBudgetRejected)throw new Error('one-below observer channel capacity did not fail closed');
+
+          const runtime=await import(pathToFileURL(resolve('visual-effect-fabric/hand-lab/src/hand-runtime.mjs')).href);
+          const donor=await import(pathToFileURL(resolve('visual-effect-fabric/hand-lab/src/phase-relationship1d.mjs')).href);
+
+          const tamperedSet=structuredClone(r.selected.phase_b);
+          tamperedSet.channels[0].phase=tamperedSet.channels[0].phase===0?0.125:0;
+          tamperedSet.phaseSetHash=runtime.hashValue({
+            schema:tamperedSet.schema,
+            sourceHash:tamperedSet.sourceHash,
+            groupPhase:tamperedSet.groupPhase,
+            channels:tamperedSet.channels,
+            derived:tamperedSet.derived,
+            rebuildable:tamperedSet.rebuildable,
+          });
+          let derivedTamperRejected=false;
+          try { donor.validatePhaseRelationshipSet(state,tamperedSet); }
+          catch(error) { derivedTamperRejected=/phase mismatch/.test(String(error)); }
+          if(!derivedTamperRejected)throw new Error('self-consistent derived phase tamper was accepted');
+
+          const forgedState=structuredClone(state);
+          forgedState.phaseRelationshipSource.algorithm='freeform-phase-convenience/v9';
+          forgedState.phaseRelationshipSourceHash=runtime.hashValue(forgedState.phaseRelationshipSource);
+          let sourceForgeryRejected=false;
+          try { donor.validatePhaseRelationshipSet(forgedState,r.selected.phase_a); }
+          catch(error) { sourceForgeryRejected=/source algorithm is invalid/.test(String(error)); }
+          if(!sourceForgeryRejected)throw new Error('self-consistent retained phase semantic forgery was accepted');
+
+          const tooMany=donor.makePhaseRelationshipState({
+            id:'too-many',
+            channels:Array.from({length:33},(_,index)=>({id:`c${String(index).padStart(2,'0')}`,cyclesPerGroup:1,phaseOffset:0})),
+          });
+          let channelCeilingRejected=false;
+          try { donor.normalizePhaseRelationshipSourceHand.execute(tooMany,{},{}); }
+          catch(error) { channelCeilingRejected=/2\.\.32/.test(String(error)); }
+          if(!channelCeilingRejected)throw new Error('33-channel donor request did not fail closed');
+
+          const challenges={
+            contract:'AXM_CREATIVE_VFX_PHASE_RELATIONSHIP_CHALLENGES',
+            version:1,
+            caller_neutral_replay:'PASS',
+            caller_request_unchanged:'PASS',
+            initial_state_unchanged:'PASS',
+            caller_ordering_canonicalization:'PASS',
+            exact_whole_group_cycle_seam:'PASS',
+            exact_vs_roomy_observer_capacity:'PASS',
+            one_below_observer_capacity:'REJECTED_AS_REQUIRED',
+            donor_33_channel_ceiling:'REJECTED_AS_REQUIRED',
+            self_consistent_derived_phase_tamper:'REJECTED_AS_REQUIRED',
+            retained_source_semantic_forgery:'REJECTED_AS_REQUIRED'
+          };
+          await writeFile(root+'challenges.json',JSON.stringify(challenges,null,2)+'\n');
+          console.log('vfx_phase_relationship_truth_gates=PASS');
+          console.log(`phase_relationship_source_hash=${retained.source_hash}`);
+          console.log(`phase_a_set_hash=${r.selected.phase_a.phaseSetHash}`);
+          console.log(`phase_b_set_hash=${r.selected.phase_b.phaseSetHash}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify both derived phase observations
+        run: |
+          root=creative-render/build/vfx-phase-relationship
+          cat > "$root/phase-a.axmrender" <<'EOF_REQ'
+          AXM_RENDER_REQUEST 1
+          scene phase-a.axmscene
+          backend axm.native.cpu.reference
+          width 640
+          height 360
+          format ppm-rgb8
+          output phase-a.ppm
+          EOF_REQ
+          cat > "$root/phase-b.axmrender" <<'EOF_REQ'
+          AXM_RENDER_REQUEST 1
+          scene phase-b.axmscene
+          backend axm.native.cpu.reference
+          width 640
+          height 360
+          format ppm-rgb8
+          output phase-b.ppm
+          EOF_REQ
+          for name in phase-a phase-b; do
+            render-fabric/build/axm-render --request "$root/$name.axmrender" --receipt "$root/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$root/$name.axmrender" "$root/$name.axmreceipt"
+          done
+
+      - name: Bind donor-owned phase relationship to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile,writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-phase-relationship/';
+          const receipt=JSON.parse(await readFile(root+'phase-relationship.receipt.json','utf8'));
+          const renders={};
+          for(const name of ['phase-a','phase-b']){
+            const [scene,request,renderReceipt,frame]=await Promise.all([
+              readFile(root+name+'.axmscene'),
+              readFile(root+name+'.axmrender'),
+              readFile(root+name+'.axmreceipt'),
+              readFile(root+name+'.ppm'),
+            ]);
+            renders[name]={
+              scene_sha256:sha(scene),
+              request_sha256:sha(request),
+              receipt_sha256:sha(renderReceipt),
+              frame_sha256:sha(frame),
+              frame_bytes:frame.length,
+            };
+          }
+          if(renders['phase-a'].scene_sha256!==receipt.outputs.phase_a_scene.sha256||
+             renders['phase-b'].scene_sha256!==receipt.outputs.phase_b_scene.sha256)throw new Error('native render scene input binding drifted');
+          if(renders['phase-a'].frame_sha256===renders['phase-b'].frame_sha256)throw new Error('derived phase relationship did not reach distinct native frame bytes');
+          const evidence={
+            contract:'AXM_CREATIVE_VFX_PHASE_RELATIONSHIP_NATIVE_PIXEL_EVIDENCE',
+            version:1,
+            render_fabric_revision:'6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b',
+            receipt_replay_verification:'PASS',
+            fixed_geometry_sha256:receipt.native_observer.phase_a.geometry_sha256,
+            frames_differ:true,
+            renders,
+            claim_boundary:'Different receipt-verified native pixels prove propagation of explicit donor-derived phase relationships through one replaceable neutral observer; they do not prove animation timing, synchronization aesthetics, effect meaning, accessibility, or realtime performance.'
+          };
+          await writeFile(root+'native-pixels.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_phase_relationship_native_pixels=PASS');
+          console.log(`phase_a_frame_sha256=${renders['phase-a'].frame_sha256}`);
+          console.log(`phase_b_frame_sha256=${renders['phase-b'].frame_sha256}`);
+          NODE
+
+      - name: Upload retained proof, including failed attempts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-phase-relationship-native-proof
+          path: creative-render/build/vfx-phase-relationship/
+          if-no-files-found: warn
