@@ -1,0 +1,168 @@
+name: vfx-path-sweep-propagation-native
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vfx-path-sweep-propagation-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-vfx-path-sweep-propagation-native:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact Creative Render candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: 39783e1d78a6649bd14a94f2302adcd761f5c4c1
+          path: visual-effect-fabric
+
+      - name: Checkout pinned Render Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Retain exact checkout identities before gates
+        env:
+          EXPECTED_CREATIVE_RENDER_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          root=creative-render/build/vfx-path-sweep-propagation
+          mkdir -p "$root"
+          creative_sha=$(git -C creative-render rev-parse HEAD)
+          vfx_sha=$(git -C visual-effect-fabric rev-parse HEAD)
+          render_sha=$(git -C render-fabric rev-parse HEAD)
+          cat > "$root/attempt.json" <<EOF
+          {"creative_render_head":"$creative_sha","visual_effect_fabric_revision":"$vfx_sha","render_fabric_revision":"$render_sha","lane":"vfx-path-sweep-propagation-native","authority":"EVIDENCE_ONLY"}
+          EOF
+          test "$creative_sha" = "$EXPECTED_CREATIVE_RENDER_SHA"
+          test "$vfx_sha" = "39783e1d78a6649bd14a94f2302adcd761f5c4c1"
+          test "$render_sha" = "6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b"
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run pinned current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Execute current VFX sweep propagation donor
+        run: |
+          root=creative-render/build/vfx-path-sweep-propagation
+          node creative-render/src/vfx_path_sweep_propagation_native_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --vfx-revision 39783e1d78a6649bd14a94f2302adcd761f5c4c1 \
+            --phase-a 0.22 --phase-b 0.72 \
+            --phase-a-scene "$root/phase-a.axmscene" \
+            --phase-b-scene "$root/phase-b.axmscene" \
+            --donor-state "$root/donor-state.json" \
+            --receipt "$root/sweep-propagation.receipt.json"
+
+      - name: Assert source authority, derived lineage, structural bounds, and forgery rejection
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { pathToFileURL } from 'node:url';
+          import { resolve } from 'node:path';
+          const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+          const root = 'creative-render/build/vfx-path-sweep-propagation/';
+          const [receiptBytes,stateBytes,aBytes,bBytes] = await Promise.all([
+            readFile(root+'sweep-propagation.receipt.json'), readFile(root+'donor-state.json'),
+            readFile(root+'phase-a.axmscene'), readFile(root+'phase-b.axmscene')
+          ]);
+          const r = JSON.parse(receiptBytes);
+          const state = JSON.parse(stateBytes);
+          if (r.contract !== 'AXM_CREATIVE_VFX_PATH_SWEEP_PROPAGATION_NATIVE_RECEIPT' || r.version !== 1) throw new Error('receipt drifted');
+          const v = r.visual_effect_fabric;
+          if (v.revision !== '39783e1d78a6649bd14a94f2302adcd761f5c4c1' || v.graph_id !== 'fx.geometry.path-sweep-propagation-weights2d' || v.graph_version !== '0.1.0' || v.donor_graph_reused !== true) throw new Error('current donor not exercised');
+          if (v.caller_neutral_replay !== 'PASS' || v.caller_paths_unchanged !== true || v.caller_requests_unchanged !== true) throw new Error('caller/source boundary failed');
+          const a = v.phase_a_weight_set, b = v.phase_b_weight_set;
+          for (const set of [a,b]) {
+            if (set.schema !== 'axm.path-sweep-propagation-weight-set2d/v0.1' || set.derived !== true || set.rebuildable !== true) throw new Error('weight-set authority drifted');
+            if (set.semantics.attributeMeaning !== 'neutral-scalar-weight' || set.semantics.geometryMutation !== 'none' || set.semantics.materialAuthority !== 'none' || set.semantics.rendererAuthority !== 'none' || set.semantics.consumerAuthority !== 'none') throw new Error('weight semantics drifted');
+            if (set.indexedStripSetHash !== v.indexed_strip_set_hash || set.propagationSourceHash !== v.retained_propagation_source_hash) throw new Error('weight lineage drifted');
+          }
+          if (a.weightSetHash === b.weightSetHash) throw new Error('phase selection did not alter derived weight set');
+          if (r.outputs.phase_a_scene.sha256 !== sha(aBytes) || r.outputs.phase_b_scene.sha256 !== sha(bBytes) || r.outputs.donor_state.sha256 !== sha(stateBytes)) throw new Error('outputs not receipt-bound');
+          if (r.native_observers.phase_a.geometry_sha256 !== r.native_observers.phase_b.geometry_sha256 || r.outputs.shared_geometry_sha256 !== r.native_observers.phase_a.geometry_sha256) throw new Error('phase changed geometry');
+          if (r.native_observers.phase_a.output_sha256 === r.native_observers.phase_b.output_sha256) throw new Error('phase failed to alter observation');
+          if (!Object.values(r.challenges).every(Boolean)) throw new Error('one or more truth challenges failed');
+          const t = r.truth_boundary;
+          if (t.caller_paths_authority !== 'RETAINED_CALLER_SOURCE_TRUTH' || t.sweep_source_authority !== 'RETAINED_VFX_SOURCE' || t.propagation_source_authority !== 'RETAINED_VFX_SOURCE' || t.propagation_weight_set_authority !== 'DERIVED_REBUILDABLE_VFX_BODY' || t.native_scene_receipt_pixels_authority !== 'DERIVED_REPLACEABLE_OBSERVER_BODIES') throw new Error('truth boundary drifted');
+          for (const key of ['propagation_recomputed_by_creative_render','normalized_distance_rederived_by_creative_render','geometry_mutated_by_weight','opacity_semantics_proven','emission_semantics_proven','visibility_or_reveal_semantics_proven','consumer_semantics_proven','continuous_animation_timing_proven','aesthetic_quality_proven','accessibility_proven','realtime_performance_proven','gpu_equivalence_proven','cross_machine_bitwise_determinism_proven']) if (t[key] !== false) throw new Error(`unsupported claim promoted: ${key}`);
+          const donor = await import(pathToFileURL(resolve('visual-effect-fabric/hand-lab/src/path-sweep-propagation-weights2d.mjs')).href);
+          if (donor.validatePathSweepPropagationWeightSet(state,a,{maxPoints:4096,maxVertices:8192}) !== true || donor.validatePathSweepPropagationWeightSet(state,b,{maxPoints:4096,maxVertices:8192}) !== true) throw new Error('selected weight set failed independent donor validation');
+          await writeFile(root+'truth-gates.json', JSON.stringify({contract:'AXM_CREATIVE_VFX_PATH_SWEEP_PROPAGATION_NATIVE_TRUTH_GATES',version:1,result:'PASS',challenges:r.challenges},null,2)+'\n');
+          console.log('vfx_path_sweep_propagation_truth_gates=PASS');
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render both derived phases and independently verify receipts
+        run: |
+          set -euo pipefail
+          root=creative-render/build/vfx-path-sweep-propagation
+          for phase in a b; do
+            cat > "$root/phase-$phase.axmrender" <<EOF
+          AXM_RENDER_REQUEST 1
+          scene phase-$phase.axmscene
+          backend axm.native.cpu.reference
+          width 640
+          height 420
+          format ppm-rgb8
+          output phase-$phase.ppm
+          EOF
+            render-fabric/build/axm-render --request "$root/phase-$phase.axmrender" --receipt "$root/phase-$phase.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$root/phase-$phase.axmrender" "$root/phase-$phase.axmreceipt"
+          done
+
+      - name: Bind legitimate donor phase difference to native pixels
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-path-sweep-propagation/';
+          const r=JSON.parse(await readFile(root+'sweep-propagation.receipt.json','utf8'));
+          const [aScene,bScene,aReceipt,bReceipt,aFrame,bFrame]=await Promise.all([
+            readFile(root+'phase-a.axmscene'),readFile(root+'phase-b.axmscene'),readFile(root+'phase-a.axmreceipt'),readFile(root+'phase-b.axmreceipt'),readFile(root+'phase-a.ppm'),readFile(root+'phase-b.ppm')]);
+          if (sha(aScene)!==r.outputs.phase_a_scene.sha256 || sha(bScene)!==r.outputs.phase_b_scene.sha256) throw new Error('renderer inputs are not receipt-bound');
+          if (aFrame.length<=32 || bFrame.length<=32 || sha(aFrame)===sha(bFrame)) throw new Error('legitimate phase difference did not reach distinct native pixels');
+          const evidence={contract:'AXM_CREATIVE_VFX_PATH_SWEEP_PROPAGATION_NATIVE_PIXEL_EVIDENCE',version:1,phase_a_weight_set_hash:r.visual_effect_fabric.phase_a_weight_set.weightSetHash,phase_b_weight_set_hash:r.visual_effect_fabric.phase_b_weight_set.weightSetHash,shared_geometry_sha256:r.outputs.shared_geometry_sha256,phase_a_frame_sha256:sha(aFrame),phase_b_frame_sha256:sha(bFrame),phase_a_render_receipt_sha256:sha(aReceipt),phase_b_render_receipt_sha256:sha(bReceipt),native_receipts_independently_verified:true,pixels_authority:'DERIVED_REPLACEABLE_OBSERVER_BODIES',material_semantics_proven:false,opacity_semantics_proven:false,emission_semantics_proven:false,reveal_semantics_proven:false,aesthetic_quality_proven:false};
+          await writeFile(root+'native-pixel-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_path_sweep_propagation_native_pixel_binding=PASS');
+          console.log(`phase_a_frame_sha256=${evidence.phase_a_frame_sha256}`);
+          console.log(`phase_b_frame_sha256=${evidence.phase_b_frame_sha256}`);
+          NODE
+
+      - name: Upload retained sweep propagation proof even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-path-sweep-propagation-native-proof
+          path: creative-render/build/vfx-path-sweep-propagation
+          if-no-files-found: warn
+          retention-days: 30
