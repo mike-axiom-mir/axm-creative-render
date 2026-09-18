@@ -90,10 +90,13 @@ This proves an **explicit VFX canonical state -> bounded raster realization -> p
 
 ## Verified only when the v0.6 FrameState video workflow is green
 
-The dedicated `framestate-video-bridge` workflow pins Universal Creation at `30d62f80c84732dbeebd1e58984525b3f8ec1d60`, Render Fabric at `6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b`, and FrameState at `41c9c6827e64613b523b28536ab864dddf046d93`.
+The dedicated `framestate-video-bridge` workflow pins Universal Creation at `724dde638763253ba1d4cf93d13aaa9a4981e4bf`, Render Fabric at `6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b`, and FrameState at `41c9c6827e64613b523b28536ab864dddf046d93`.
+
+Before the execution gates, the workflow checks out the exact Creative Render PR head, independently reads all four checked-out revisions, fails if any revision differs from the declared source/donor pin, and retains that provenance record as evidence-only state. The proof artifact is uploaded with `if: always()` so a failure after provenance capture can retain partial outputs and diagnostics rather than being rewritten as a weaker success path.
 
 A passing run establishes only these additional facts:
 
+- the pinned current Universal Creation revision can still execute the bounded rig/clip/skin sampling path used by this bridge;
 - three sparse Universal Creation animation samples become three independently receipt-verified Render Fabric PPM frames;
 - those exact PPM bytes are admitted into a generated `axm.framestate.project/v0.5` with SHA-256-bound source identity and explicit non-overlapping hold intervals;
 - FrameState accepts the generated project through its canonical loader;

@@ -40,9 +40,11 @@ The bridge does not teach FrameState about Universal Creation rigs. It admits on
 
 ## Pinned proof bodies
 
-- Universal Creation: `30d62f80c84732dbeebd1e58984525b3f8ec1d60`
+- Universal Creation: `724dde638763253ba1d4cf93d13aaa9a4981e4bf`
 - Render Fabric: `6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b`
 - FrameState: `41c9c6827e64613b523b28536ab864dddf046d93`
+
+The retained workflow explicitly checks out the Creative Render PR head instead of relying on an implicit pull-request merge ref, records the exact checked-out Creative Render and donor revisions before execution gates, and fails if any checkout does not equal the declared revision. The provenance record is evidence only; it does not become source authority.
 
 The proof uses three 320x180 source frames at FrameState 12 fps, each held for four frames. The resulting canonical project therefore requests 12 FrameState frames / 1 second.
 
@@ -79,6 +81,8 @@ The integration workflow then uses FrameState itself for four distinct observati
 - the verified frame count matches the Creative Render project's declared duration;
 - the exact CI FFmpeg environment evidence file exists, names the resolved executable and package version, and is SHA-256-bound into the final Creative Render evidence.
 
+The workflow uploads the same proof artifact with `if: always()`. Its attempt provenance is written before the execution gates, and render stdout/stderr/return code/diagnostics are included when present. A failure during current-UC sampling, Render Fabric realization, FrameState rendering, repeat verification, read-only verification or the final Creative Render gate therefore leaves retained evidence instead of encouraging a weaker retry.
+
 ## FFmpeg boundary
 
 FrameState explicitly treats container assembly as an external FFmpeg boundary. v0.6 preserves that wording.
@@ -91,11 +95,11 @@ This does not make FFmpeg part of Creative Render's native/runtime dependency se
 
 ## Four-root gate
 
-**Truth** — sparse source samples, FrameState project state, deterministic FrameState frame rendering, read-only evidence verification and external MP4 encoding are separate claims. The absent-runner-tool failure is retained.
+**Truth** — sparse source samples, exact checked-out revisions, FrameState project state, deterministic FrameState frame rendering, read-only evidence verification and external MP4 encoding are separate claims. Failed attempts remain retained.
 
 **Agency / non-domination** — Creative Render chooses explicit source frames and hold durations; FrameState receives no authority over upstream creative state, and its verifier returns evidence-only authority. The optional encoder is installed only for the isolated CI proof.
 
-**Continuity** — original Render Fabric frames stay intact; exact source hashes, project bytes, FrameState receipts/manifests, repeat evidence, verification evidence, FFmpeg environment evidence and MP4 bytes stay separately bound.
+**Continuity** — original Render Fabric frames stay intact; exact source hashes, project bytes, donor provenance, FrameState receipts/manifests, repeat evidence, verification evidence, FFmpeg environment evidence and MP4 bytes stay separately bound.
 
 **Wisdom before speed** — three sparse frames and one one-second video prove the handoff before attempting continuous rig transfer, video interpolation or a universal temporal protocol.
 
