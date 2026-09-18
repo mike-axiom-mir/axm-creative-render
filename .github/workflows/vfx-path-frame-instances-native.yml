@@ -1,0 +1,185 @@
+name: vfx-path-frame-instances-native
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vfx-path-frame-instances-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-vfx-path-frame-instances-native:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact Creative Render head
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Checkout pinned current Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: c69ed0f9db1476aaf236b519937458ec6f754f6f
+          path: visual-effect-fabric
+
+      - name: Checkout pinned current Render Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Retain and verify exact attempt identity before gates
+        env:
+          AXM_CREATIVE_RENDER_EXACT_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          root=creative-render/build/vfx-path-frame-instances
+          mkdir -p "$root"
+          creative_head="$(git -C creative-render rev-parse HEAD)"
+          vfx_head="$(git -C visual-effect-fabric rev-parse HEAD)"
+          render_head="$(git -C render-fabric rev-parse HEAD)"
+          cat > "$root/attempt.json" <<EOF
+          {
+            "creative_render_head": "$creative_head",
+            "visual_effect_fabric_revision": "$vfx_head",
+            "render_fabric_revision": "$render_head",
+            "lane": "vfx-path-frame-instances-native",
+            "authority": "EVIDENCE_ONLY"
+          }
+          EOF
+          test "$creative_head" = "$AXM_CREATIVE_RENDER_EXACT_HEAD"
+          test "$vfx_head" = "c69ed0f9db1476aaf236b519937458ec6f754f6f"
+          test "$render_head" = "6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b"
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run pinned current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Execute current VFX path-frame-instance donor and build replaceable native observations
+        run: |
+          root=creative-render/build/vfx-path-frame-instances
+          node creative-render/src/vfx_path_frame_instances_native_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --vfx-revision c69ed0f9db1476aaf236b519937458ec6f754f6f \
+            --dense-scene "$root/dense.axmscene" \
+            --sparse-scene "$root/sparse.axmscene" \
+            --donor-state "$root/donor-state.json" \
+            --receipt "$root/path-frame-instances.receipt.json"
+
+      - name: Assert retained truth, external prototype boundary, selection, and tamper rejection
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { pathToFileURL } from 'node:url';
+          import { resolve } from 'node:path';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-path-frame-instances/';
+          const [receiptBytes,stateBytes,denseBytes,sparseBytes]=await Promise.all([
+            readFile(root+'path-frame-instances.receipt.json'),
+            readFile(root+'donor-state.json'),
+            readFile(root+'dense.axmscene'),
+            readFile(root+'sparse.axmscene'),
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          const state=JSON.parse(stateBytes.toString('utf8'));
+          if(r.contract!=='AXM_CREATIVE_VFX_PATH_FRAME_INSTANCES_NATIVE_RECEIPT'||r.version!==1)throw new Error('path-frame instance receipt drifted');
+          const v=r.visual_effect_fabric;
+          if(v.revision!=='c69ed0f9db1476aaf236b519937458ec6f754f6f'||v.donor_graph_reused!==true)throw new Error('pinned current instance donor not exercised');
+          if(v.graph_id!=='fx.geometry.path-frame-instances2d'||v.graph_version!=='0.1.0')throw new Error('instance graph identity drifted');
+          if(v.caller_neutral_replay!=='PASS'||v.caller_request_unchanged!==true||v.caller_paths_unchanged!==true)throw new Error('caller/source boundary failed');
+          const s=v.retained_sweep_source;
+          if(s.schema!=='axm.path-sweep-frame-source/v0.1'||s.algorithm!=='polyline-bisector-sweep-frame2d/v0.1'||s.profile!=='symmetric-ribbon2d'||s.frame_policy!=='left-normal-bisector2d'||s.width_mode!=='constant-half-width')throw new Error('retained sweep semantics drifted');
+          const dense=v.dense_instance_set, sparse=v.sparse_instance_set;
+          for(const set of [dense,sparse]){
+            if(set.schema!=='axm.path-frame-instance-transform-set2d/v0.1'||set.derived!==true||set.rebuildable!==true)throw new Error('instance body authority drifted');
+            if(set.sweepSourceHash!==s.source_hash||set.pathSourceHash!==s.path_source_hash||set.frameSetHash!==v.selected_frame_set.frameSetHash)throw new Error('instance lineage drifted');
+            const sem=set.semantics;
+            if(sem.algorithm!=='verified-path-frame-rigid-instance2d/v0.1'||sem.selectionPolicy!=='stride-with-final-frame'||sem.translationPolicy!=='frame-position'||sem.orientationPolicy!=='tangent-normal-rigid-basis'||sem.scalePolicy!=='identity-only'||sem.widthPolicy!=='carry-sweep-half-width-as-neutral-hint'||sem.prototypeBinding!=='external-required'||sem.rendererAuthority!=='none'||sem.meshAuthority!=='none'||sem.consumerPlacementAuthority!=='none')throw new Error('instance donor semantics drifted');
+          }
+          if(dense.selection.stride!==1||sparse.selection.stride!==2||sparse.instanceCount>=dense.instanceCount)throw new Error('derived density selection drifted');
+          if(r.outputs.dense_scene.sha256!==sha(denseBytes)||r.outputs.sparse_scene.sha256!==sha(sparseBytes)||r.outputs.donor_state.sha256!==sha(stateBytes))throw new Error('outputs are not receipt-bound');
+          if(r.dense_observer.prototype_authority!=='CALLER_OWNED_REPLACEABLE_OBSERVER_INPUT'||r.dense_observer.basis_consumed_directly!==true||r.dense_observer.angle_rederived_by_consumer!==false||r.dense_observer.sweep_half_width_used_as_scale!==false||r.dense_observer.canonical_mesh_authority_acquired!==false)throw new Error('observer authority boundary drifted');
+          if(!Object.values(r.challenges).every(Boolean))throw new Error('one or more retained instance challenges failed');
+          const t=r.truth_boundary;
+          if(t.caller_paths_authority!=='RETAINED_CALLER_SOURCE_TRUTH'||t.sweep_source_authority!=='RETAINED_VFX_SOURCE'||t.frame_set_authority!=='DERIVED_REBUILDABLE_VFX_BODY'||t.instance_set_authority!=='DERIVED_REBUILDABLE_VFX_BODY'||t.external_prototype_authority!=='CALLER_OWNED_REPLACEABLE_OBSERVER_INPUT'||t.native_scene_receipt_pixels_authority!=='DERIVED_REPLACEABLE_OBSERVER_BODIES')throw new Error('truth boundary labels drifted');
+          for(const key of ['sweep_width_used_as_geometry_scale','angle_convention_added_by_creative_render','canonical_mesh_authority_acquired','consumer_semantics_proven','sprite_particle_mesh_material_semantics_proven','aesthetic_quality_proven','accessibility_proven','realtime_performance_proven','gpu_equivalence_proven','cross_machine_bitwise_determinism_proven'])if(t[key]!==false)throw new Error(`unsupported claim promoted: ${key}`);
+          const donor=await import(pathToFileURL(resolve('visual-effect-fabric/hand-lab/src/path-frame-instances2d.mjs')).href);
+          if(donor.validatePathFrameInstanceTransformSet(state,dense,{maxPoints:4096,maxInstances:4096})!==true)throw new Error('retained donor state no longer validates dense instance set');
+          await writeFile(root+'challenges.json',JSON.stringify({contract:'AXM_CREATIVE_VFX_PATH_FRAME_INSTANCES_NATIVE_CHALLENGES',version:1,...r.challenges},null,2)+'\n');
+          console.log('vfx_path_frame_instances_truth_gates=PASS');
+          console.log(`dense_instance_set_hash=${dense.instanceSetHash}`);
+          console.log(`sparse_instance_set_hash=${sparse.instanceSetHash}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify dense and sparse observations
+        run: |
+          root=creative-render/build/vfx-path-frame-instances
+          for mode in dense sparse; do
+            cat > "$root/$mode.axmrender" <<EOF_REQ
+          AXM_RENDER_REQUEST 1
+          scene $mode.axmscene
+          backend axm.native.cpu.reference
+          width 640
+          height 420
+          format ppm-rgb8
+          output $mode.ppm
+          EOF_REQ
+            render-fabric/build/axm-render --request "$root/$mode.axmrender" --receipt "$root/$mode.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$root/$mode.axmrender" "$root/$mode.axmreceipt"
+          done
+
+      - name: Bind donor instance selection to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile,writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-path-frame-instances/';
+          const receipt=JSON.parse(await readFile(root+'path-frame-instances.receipt.json','utf8'));
+          const evidence={contract:'AXM_CREATIVE_VFX_PATH_FRAME_INSTANCES_NATIVE_PIXEL_EVIDENCE',version:1,frames:{},authority:'DERIVED_REPLACEABLE_OBSERVER_EVIDENCE'};
+          for(const mode of ['dense','sparse']){
+            const [scene,request,renderReceipt,frame]=await Promise.all([readFile(root+mode+'.axmscene'),readFile(root+mode+'.axmrender'),readFile(root+mode+'.axmreceipt'),readFile(root+mode+'.ppm')]);
+            if(sha(scene)!==receipt.outputs[mode+'_scene'].sha256)throw new Error(`${mode} renderer did not consume receipt-bound scene`);
+            if(frame.length<=32)throw new Error(`${mode} native frame is unexpectedly empty`);
+            evidence.frames[mode]={scene_sha256:sha(scene),request_sha256:sha(request),render_receipt_sha256:sha(renderReceipt),frame_sha256:sha(frame),frame_bytes:frame.length,native_receipt_independently_verified:true};
+          }
+          if(evidence.frames.dense.frame_sha256===evidence.frames.sparse.frame_sha256)throw new Error('dense/sparse derived selection did not reach distinct native pixels');
+          evidence.distinct_selection_reaches_distinct_pixels=true;
+          evidence.aesthetic_quality_proven=false;
+          evidence.prototype_semantics_proven=false;
+          await writeFile(root+'native-pixel-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_path_frame_instances_native_pixel_binding=PASS');
+          console.log(`dense_frame_sha256=${evidence.frames.dense.frame_sha256}`);
+          console.log(`sparse_frame_sha256=${evidence.frames.sparse.frame_sha256}`);
+          NODE
+
+      - name: Upload retained path-frame instance proof even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-path-frame-instances-native-proof
+          path: creative-render/build/vfx-path-frame-instances
+          if-no-files-found: warn
+          retention-days: 30
