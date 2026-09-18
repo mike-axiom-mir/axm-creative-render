@@ -1,0 +1,195 @@
+name: vfx-branch-propagation-svg-browser
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vfx-branch-propagation-svg-browser-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-vfx-branch-propagation-svg-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: fd945192f6c6fa4dfc6e40b05c8d1aff644c088b
+          path: visual-effect-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Prepare retained attempt evidence
+        run: |
+          root=creative-render/build/vfx-branch-propagation-svg-browser
+          mkdir -p "$root"
+          cat > "$root/donor-revisions.json" <<'EOF'
+          {
+            "visual_effect_fabric": "fd945192f6c6fa4dfc6e40b05c8d1aff644c088b"
+          }
+          EOF
+          cat > "$root/attempt.json" <<'EOF'
+          {
+            "lane": "vfx-branch-propagation-svg-browser",
+            "canonical_authority": "retained VFX branch-growth source plus retained VFX propagation-front source",
+            "derived_rebuildable": ["branch network", "branch-propagation envelopes"],
+            "derived_replaceable": ["SVG realizations", "browser probe", "browser pixels", "screenshots"],
+            "automatic_aesthetic_acceptance": false
+          }
+          EOF
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Build source-honest branch propagation SVG proof
+        run: |
+          node --input-type=module <<'NODE'
+          import { mkdir, writeFile } from 'node:fs/promises';
+          import { resolve } from 'node:path';
+          import { sha256 } from './creative-render/src/creative_scene_operator.mjs';
+          import { observeVisualEffectBranchPropagationStaticSvg } from './creative-render/src/vfx_branch_propagation_svg_browser_bridge.mjs';
+          const root='creative-render/build/vfx-branch-propagation-svg-browser';
+          await mkdir(root,{recursive:true});
+          const observed=await observeVisualEffectBranchPropagationStaticSvg(resolve('visual-effect-fabric'),{vfxRevision:'fd945192f6c6fa4dfc6e40b05c8d1aff644c088b'});
+          const files={
+            'prepared-donor-state.json':observed.donorStateBytes,
+            'branch-propagation-native.receipt.json':observed.nativeReceiptBytes,
+            'phase-a-state.json':observed.phaseAStateBytes,
+            'phase-b-state.json':observed.phaseBStateBytes,
+            'phase-a.svg':observed.phaseASvg,
+            'phase-b.svg':observed.phaseBSvg,
+            'alternate-presentation.svg':observed.alternateSvg,
+            'phase-1.svg':observed.phase1Svg,
+            'phase-1-base-branch.svg':observed.phase1BaseSvg,
+            'browser-probe.html':observed.probeHtml,
+          };
+          const outputs={};
+          for(const [name,bytes] of Object.entries(files)){await writeFile(`${root}/${name}`,bytes);outputs[name]={sha256:sha256(bytes),bytes:bytes.length};}
+          const receipt={
+            contract:'AXM_CREATIVE_VFX_BRANCH_PROPAGATION_SVG_BROWSER_BUILD_RECEIPT',
+            version:1,
+            visual_effect_fabric:observed.observation,
+            outputs,
+            authority:{
+              canonical:'retained VFX branch-growth source plus retained VFX propagation-front source',
+              derived_rebuildable:['branch network','branch-propagation envelopes'],
+              derived_replaceable:['SVG realizations','browser probe','browser pixels','screenshots']
+            }
+          };
+          const receiptBytes=Buffer.from(JSON.stringify(receipt,null,2)+'\n');
+          await writeFile(`${root}/build.receipt.json`,receiptBytes);
+          console.log('vfx_branch_propagation_svg_build=PASS');
+          console.log(`phase_a_svg_sha256=${outputs['phase-a.svg'].sha256}`);
+          console.log(`phase_b_svg_sha256=${outputs['phase-b.svg'].sha256}`);
+          console.log(`receipt_sha256=${sha256(receiptBytes)}`);
+          NODE
+
+      - name: Independently assert source authority, envelope lineage and disposable SVG controls
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-branch-propagation-svg-browser/';
+          const names=['build.receipt.json','donor-revisions.json','prepared-donor-state.json','branch-propagation-native.receipt.json','phase-a-state.json','phase-b-state.json','phase-a.svg','phase-b.svg','alternate-presentation.svg','phase-1.svg','phase-1-base-branch.svg','browser-probe.html'];
+          const values=Object.fromEntries(await Promise.all(names.map(async name=>[name,await readFile(root+name)])));
+          const r=JSON.parse(values['build.receipt.json']),d=JSON.parse(values['donor-revisions.json']),v=r.visual_effect_fabric;
+          if(d.visual_effect_fabric!=='fd945192f6c6fa4dfc6e40b05c8d1aff644c088b'||v.donor_revision!==d.visual_effect_fabric)throw new Error('pinned VFX revision evidence drifted');
+          if(r.contract!=='AXM_CREATIVE_VFX_BRANCH_PROPAGATION_SVG_BROWSER_BUILD_RECEIPT'||r.version!==1)throw new Error('build receipt drifted');
+          if(v.native_graph_id!=='fx.growth.branching2d-propagation-front'||v.static_graph_id!=='fx.growth.branching2d-propagation-front-static-svg'||v.static_hand_id!=='fx.growth.branching2d-propagation-front-static-svg-realize')throw new Error('expected current branch-propagation donor graphs were not exercised');
+          if(v.retained.branch_source_hash===v.retained.propagation_source_hash)throw new Error('separate retained authorities unexpectedly collapsed to one identity');
+          if(v.derived_network.derived!==true||v.derived_network.rebuildable!==true||!(v.derived_network.segment_count>0))throw new Error('derived branch network boundary drifted');
+          if(v.phase_a.envelope_hash===v.phase_b.envelope_hash||v.phase_a.svg_sha256===v.phase_b.svg_sha256)throw new Error('selected propagation phases did not remain observably distinct');
+          if(v.phase_1_no_op.phase!==1||v.phase_1_no_op.all_one!==true||v.phase_1_no_op.byte_identical_to_base_branch_svg!==true)throw new Error('phase-1 exact base-renderer no-op failed');
+          if(v.capacity_challenge.exact_equals_roomy!==true||v.capacity_challenge.one_below_rejected!==true)throw new Error('structural SVG capacity boundary failed');
+          if(v.presentation_challenge.same_envelope_hash!==true||v.presentation_challenge.same_network_hash!==true||v.presentation_challenge.svg_bytes_changed!==true)throw new Error('renderer-only presentation boundary failed');
+          if(v.derived_tamper_challenge.recomputed_self_consistent_hash!==true||v.derived_tamper_challenge.rejected!==true||!/does not match fresh source derivation/.test(v.derived_tamper_challenge.error))throw new Error('self-consistent derived envelope tamper was not rejected from retained source truth');
+          for(const [name,row] of Object.entries(r.outputs)){if(!values[name]||row.sha256!==sha(values[name])||row.bytes!==values[name].length)throw new Error(`retained output byte binding drifted: ${name}`);}
+          if(sha(values['phase-1.svg'])!==sha(values['phase-1-base-branch.svg']))throw new Error('retained phase-1 no-op bytes differ');
+          if(sha(values['phase-b.svg'])===sha(values['alternate-presentation.svg']))throw new Error('retained presentation challenge did not change replaceable SVG bytes');
+          if(v.truth_boundary.browser_pixels_proven!==false||v.truth_boundary.aesthetic_quality_proven!==false||v.truth_boundary.reveal_or_growth_semantics_proven!==false||v.truth_boundary.physical_propagation_proven!==false)throw new Error('pre-browser truth boundary was promoted');
+          const evidence={
+            contract:'AXM_CREATIVE_VFX_BRANCH_PROPAGATION_SVG_INDEPENDENT_EVIDENCE',version:1,
+            build_receipt_sha256:sha(values['build.receipt.json']),donor_revision:v.donor_revision,
+            branch_source_hash:v.retained.branch_source_hash,propagation_source_hash:v.retained.propagation_source_hash,network_hash:v.derived_network.network_hash,
+            phase_a_envelope_hash:v.phase_a.envelope_hash,phase_b_envelope_hash:v.phase_b.envelope_hash,
+            gates:{source_authority:'PASS',derived_rebuild_lineage:'PASS',phase_1_exact_no_op:'PASS',capacity_fail_closed:'PASS',derived_tamper_rejected:'PASS',presentation_replaceability:'PASS',pre_browser_truth_boundary:'PASS'}
+          };
+          await writeFile(root+'independent-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_branch_propagation_svg_lineage=PASS');
+          NODE
+
+      - name: Locate installed browser and retain exact version
+        run: |
+          root=creative-render/build/vfx-branch-propagation-svg-browser
+          browser="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || true)"
+          if [ -z "$browser" ]; then echo "No supported Chromium-family browser is installed" >&2; exit 1; fi
+          printf '%s\n' "$browser" > "$root/browser-path.txt"
+          "$browser" --version | tee "$root/browser-version.txt"
+
+      - name: Rasterize exact donor SVGs through the real headless browser
+        run: |
+          root=creative-render/build/vfx-branch-propagation-svg-browser
+          browser="$(cat "$root/browser-path.txt")"
+          probe_uri="file://$(realpath "$root/browser-probe.html")"
+          "$browser" --headless=new --no-sandbox --disable-gpu --allow-file-access-from-files --virtual-time-budget=5000 --dump-dom "$probe_uri" > "$root/browser-probe.dump.html"
+          grep -q 'data-axm-done="true"' "$root/browser-probe.dump.html"
+          "$browser" --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=640,420 --screenshot="$PWD/$root/phase-a-browser.png" "file://$(realpath "$root/phase-a.svg")"
+          "$browser" --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=640,420 --screenshot="$PWD/$root/phase-b-browser.png" "file://$(realpath "$root/phase-b.svg")"
+          test -s "$root/phase-a-browser.png" && test -s "$root/phase-b-browser.png"
+
+      - name: Verify and bind raw browser pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { parseBranchPropagationSvgBrowserProbeDump, verifyBranchPropagationSvgBrowserRasterEvidence } from './creative-render/src/vfx_branch_propagation_svg_browser_bridge.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-branch-propagation-svg-browser/';
+          const [dump,probe,receiptBytes,browserVersionBytes,phaseAShot,phaseBShot]=await Promise.all([readFile(root+'browser-probe.dump.html'),readFile(root+'browser-probe.html'),readFile(root+'build.receipt.json'),readFile(root+'browser-version.txt'),readFile(root+'phase-a-browser.png'),readFile(root+'phase-b-browser.png')]);
+          const r=JSON.parse(receiptBytes),v=r.visual_effect_fabric;
+          if(sha(probe)!==r.outputs['browser-probe.html'].sha256)throw new Error('browser probe changed after build receipt');
+          const raster=verifyBranchPropagationSvgBrowserRasterEvidence(parseBranchPropagationSvgBrowserProbeDump(dump),{phaseASvgSha256:r.outputs['phase-a.svg'].sha256,phaseBSvgSha256:r.outputs['phase-b.svg'].sha256});
+          const sig='89504e470d0a1a0a';if(phaseAShot.subarray(0,8).toString('hex')!==sig||phaseBShot.subarray(0,8).toString('hex')!==sig)throw new Error('browser screenshots are not PNG');
+          const browserVersion=browserVersionBytes.toString('utf8').trim();if(!browserVersion)throw new Error('browser version evidence is empty');
+          const evidence={
+            contract:'AXM_CREATIVE_VFX_BRANCH_PROPAGATION_SVG_BROWSER_RASTER_EVIDENCE',version:1,
+            build_receipt_sha256:sha(receiptBytes),donor_revision:v.donor_revision,
+            branch_source_hash:v.retained.branch_source_hash,propagation_source_hash:v.retained.propagation_source_hash,network_hash:v.derived_network.network_hash,
+            phase_a_envelope_hash:v.phase_a.envelope_hash,phase_b_envelope_hash:v.phase_b.envelope_hash,
+            browser:{version:browserVersion,version_sha256:sha(browserVersionBytes),mode:'headless-local-file',network_required:false},
+            raster,
+            screenshots:{phase_a:{sha256:sha(phaseAShot),bytes:phaseAShot.length},phase_b:{sha256:sha(phaseBShot),bytes:phaseBShot.length}},
+            authority:{canonical:'retained VFX branch-growth source plus retained VFX propagation-front source',derived_rebuildable:['branch network','branch-propagation envelopes'],browser_rgba_and_screenshots:'DERIVED_BROWSER_OUTPUT'},
+            truth_boundary:{proves:'the identified local browser decoded and rasterized the exact hash-bound source-honest donor SVGs for two explicit propagation phases and their donor-derived envelope difference reached measurably different pixels',does_not_prove:'aesthetic quality, readability, reveal/growth/opacity/emission or other consumer semantics, physical propagation, continuous animation or timing, accessibility, production readiness, GPU parity, target-device realtime performance, Firefox/WebKit equivalence, or cross-browser/cross-machine bitwise determinism'}
+          };
+          await writeFile(root+'browser-raster-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_branch_propagation_svg_browser_observation=PASS');
+          console.log(`browser=${browserVersion}`);console.log(`different_pixels=${raster.different_pixels}`);console.log(`different_channels=${raster.different_channels}`);console.log(`sum_abs_channel_delta=${raster.sum_abs_channel_delta}`);console.log(`phase_a_rgba_fnv1a32=${raster.phase_a_rgba_fnv1a32}`);console.log(`phase_b_rgba_fnv1a32=${raster.phase_b_rgba_fnv1a32}`);
+          NODE
+
+      - name: Upload complete branch propagation SVG browser proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-branch-propagation-svg-browser-proof
+          path: creative-render/build/vfx-branch-propagation-svg-browser/
+          if-no-files-found: warn
