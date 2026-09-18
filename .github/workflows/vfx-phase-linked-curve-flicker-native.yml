@@ -1,0 +1,289 @@
+name: vfx-phase-linked-curve-flicker-native
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vfx-phase-linked-curve-flicker-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-vfx-phase-linked-curve-flicker-native:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: 6407ece358b99ba4d4362b9f6330de1efcea21ea
+          path: visual-effect-fabric
+
+      - name: Checkout pinned current Render Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Retain attempt identity before gates
+        run: |
+          mkdir -p creative-render/build/vfx-phase-linked-curve-flicker
+          cat > creative-render/build/vfx-phase-linked-curve-flicker/attempt.json <<EOF
+          {
+            "creative_render_head": "${GITHUB_SHA}",
+            "visual_effect_fabric_revision": "6407ece358b99ba4d4362b9f6330de1efcea21ea",
+            "render_fabric_revision": "6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b",
+            "lane": "vfx-phase-linked-curve-flicker-native"
+          }
+          EOF
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run pinned current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Execute current VFX phase-linked curve/flicker donor
+        run: |
+          root=creative-render/build/vfx-phase-linked-curve-flicker
+          node creative-render/src/vfx_phase_linked_curve_flicker_native_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --vfx-revision 6407ece358b99ba4d4362b9f6330de1efcea21ea \
+            --phase-a-scene "$root/phase-a.axmscene" \
+            --phase-b-scene "$root/phase-b.axmscene" \
+            --donor-state "$root/donor-state.json" \
+            --receipt "$root/phase-linked.receipt.json"
+
+      - name: Assert independent donor authority, loop closure, bounded work, and tamper rejection
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { pathToFileURL } from 'node:url';
+          import { resolve } from 'node:path';
+          import { phaseLinkedCurveFlickerSampleToAxmScene } from './creative-render/src/vfx_phase_linked_curve_flicker_native_bridge.mjs';
+
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-phase-linked-curve-flicker/';
+          const [receiptBytes,stateBytes,sceneA,sceneB]=await Promise.all([
+            readFile(root+'phase-linked.receipt.json'),
+            readFile(root+'donor-state.json'),
+            readFile(root+'phase-a.axmscene'),
+            readFile(root+'phase-b.axmscene'),
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          const state=JSON.parse(stateBytes.toString('utf8'));
+
+          if(r.contract!=='AXM_CREATIVE_VFX_PHASE_LINKED_CURVE_FLICKER_NATIVE_RECEIPT'||r.version!==1)throw new Error('phase-linked receipt drifted');
+          const v=r.visual_effect_fabric;
+          if(v.revision!=='6407ece358b99ba4d4362b9f6330de1efcea21ea'||v.donor_graph_reused!==true)throw new Error('pinned current phase-linked donor not exercised');
+          if(v.graph_id!=='fx.animation.phase-linked-curve-flicker'||v.graph_version!=='0.1.0')throw new Error('phase-linked graph identity drifted');
+          if(v.caller_neutral_replay!=='PASS'||v.caller_requests_unchanged!==true||v.initial_state_unchanged!==true)throw new Error('phase-linked caller/state boundary failed');
+
+          const retained=v.retained_sources;
+          if(retained.parameter_curve.schema!=='axm.parameter-curve-source/v0.1'||retained.parameter_curve.wrap_mode!=='loop')throw new Error('retained parameter curve boundary drifted');
+          if(retained.flicker_cycle.schema!=='axm.flicker-cycle-source/v0.1'||retained.flicker_cycle.wrap_mode!=='loop'||retained.flicker_cycle.algorithm!=='periodic-slot-noise1d/v0.1')throw new Error('retained flicker boundary drifted');
+          if(retained.phase_relationship.schema!=='axm.phase-relationship-source/v0.1'||retained.phase_relationship.wrap_mode!=='loop'||retained.phase_relationship.algorithm!=='integer-cycle-phase-relationship1d/v0.1')throw new Error('retained phase relationship boundary drifted');
+
+          for(const selected of [r.selected.phase_a,r.selected.phase_b]){
+            if(selected.schema!=='axm.phase-linked-curve-flicker-sample/v0.1'||selected.derived!==true||selected.rebuildable!==true)throw new Error('derived linked-sample authority drifted');
+            if(selected.parameterCurveSourceHash!==retained.parameter_curve.source_hash||selected.flickerCycleSourceHash!==retained.flicker_cycle.source_hash||selected.phaseRelationshipSourceHash!==retained.phase_relationship.source_hash)throw new Error('linked sample retained-source lineage drifted');
+            if(selected.combination!=='none'||selected.schedulerAuthority!=='none'||selected.phaseSelection!=='derived-only'||Object.hasOwn(selected,'combinedValue'))throw new Error('linked sample invented combination or scheduler authority');
+            if(selected.curve.channelId===selected.flicker.channelId)throw new Error('linked sample channels became ambiguous');
+          }
+          if(r.selected.phase_a.sampleHash===r.selected.phase_b.sampleHash)throw new Error('selected group phases did not create distinct linked samples');
+          if(r.selected.whole_cycle_phase_a.equals_phase_a!==true||r.selected.whole_cycle_phase_a.sample_hash!==r.selected.phase_a.sampleHash||r.selected.whole_cycle_phase_a.wrapped_group_phase!==r.selected.phase_a.groupPhase)throw new Error('whole group cycle did not close exactly');
+
+          if(!Object.values(r.invariants).every(Boolean))throw new Error('phase-linked invariants failed');
+          if(r.native_observer.phase_a.geometry_sha256!==r.native_observer.phase_b.geometry_sha256)throw new Error('phase-linked observer geometry changed across group phase');
+          if(r.native_observer.phase_a.output_sha256===r.native_observer.phase_b.output_sha256)throw new Error('independent donor values did not reach observation bytes');
+          if(r.native_observer.phase_a.values_combined!==false||r.native_observer.phase_b.values_combined!==false||r.native_observer.difference_channel!=='SEPARATE_NEUTRAL_GRAYSCALE_FROM_INDEPENDENT_DONOR_CURVE_AND_FLICKER_VALUES')throw new Error('observer independence boundary drifted');
+          if(r.outputs.phase_a_scene.sha256!==sha(sceneA)||r.outputs.phase_b_scene.sha256!==sha(sceneB)||r.outputs.donor_state.sha256!==sha(stateBytes))throw new Error('phase-linked output byte binding drifted');
+
+          const truth=v.truth_boundary;
+          if(truth.retained_parameter_curve_authority!=='RETAINED_VFX_SOURCE'||truth.retained_flicker_cycle_authority!=='RETAINED_VFX_SOURCE'||truth.retained_phase_relationship_authority!=='RETAINED_VFX_SOURCE'||truth.linked_sample_authority!=='DERIVED_REBUILDABLE_VFX_BODY'||truth.native_scenes_and_pixels_authority!=='DERIVED_REPLACEABLE_OBSERVER_BODIES')throw new Error('phase-linked authority labels drifted');
+          if(truth.combined_value_created!==false||truth.scheduler_authority_acquired!==false||truth.continuous_animation_proven!==false||truth.synchronization_quality_proven!==false||truth.flicker_comfort_or_photosensitivity_safety_proven!==false||truth.effect_semantics_proven!==false||truth.aesthetic_quality_proven!==false||truth.accessibility_proven!==false||truth.realtime_performance_proven!==false)throw new Error('unsupported phase-linked claim was promoted');
+
+          const retainedForObserver={
+            parameterCurveSource:state.parameterCurveSource,
+            parameterCurveSourceHash:state.parameterCurveSourceHash,
+            flickerCycleSource:state.flickerCycleSource,
+            flickerCycleSourceHash:state.flickerCycleSourceHash,
+            phaseRelationshipSource:state.phaseRelationshipSource,
+            phaseRelationshipSourceHash:state.phaseRelationshipSourceHash,
+          };
+          const exact=phaseLinkedCurveFlickerSampleToAxmScene(retainedForObserver,r.selected.phase_a,{maxSignals:2});
+          const roomy=phaseLinkedCurveFlickerSampleToAxmScene(retainedForObserver,r.selected.phase_a,{maxSignals:16});
+          if(exact.observation.output_sha256!==roomy.observation.output_sha256)throw new Error('structural observer capacity changed derived meaning');
+          let observerBudgetRejected=false;
+          try { phaseLinkedCurveFlickerSampleToAxmScene(retainedForObserver,r.selected.phase_a,{maxSignals:1}); }
+          catch(error) { observerBudgetRejected=/signal budget exceeded: 2 > 1/.test(String(error)); }
+          if(!observerBudgetRejected)throw new Error('one-below observer capacity did not fail closed');
+
+          const runtime=await import(pathToFileURL(resolve('visual-effect-fabric/hand-lab/src/hand-runtime.mjs')).href);
+          const donor=await import(pathToFileURL(resolve('visual-effect-fabric/hand-lab/src/phase-linked-curve-flicker.mjs')).href);
+
+          const tampered=structuredClone(r.selected.phase_a);
+          tampered.curve.value=Number((tampered.curve.value+0.1).toFixed(6));
+          const samplePayload={
+            schema:tampered.schema,
+            mapping:tampered.mapping,
+            combination:tampered.combination,
+            schedulerAuthority:tampered.schedulerAuthority,
+            phaseSelection:tampered.phaseSelection,
+            phaseRelationshipSourceHash:tampered.phaseRelationshipSourceHash,
+            phaseSetHash:tampered.phaseSetHash,
+            parameterCurveSourceHash:tampered.parameterCurveSourceHash,
+            flickerCycleSourceHash:tampered.flickerCycleSourceHash,
+            groupPhase:tampered.groupPhase,
+            curve:tampered.curve,
+            flicker:tampered.flicker,
+            derived:tampered.derived,
+            rebuildable:tampered.rebuildable,
+          };
+          tampered.sampleHash=runtime.hashValue(samplePayload);
+          let sampleTamperRejected=false;
+          try { donor.validatePhaseLinkedCurveFlickerSample(state,tampered); }
+          catch(error) { sampleTamperRejected=/does not rebuild from retained donor truth/.test(String(error)); }
+          if(!sampleTamperRejected)throw new Error('self-consistent linked-sample tamper was accepted');
+
+          let sameChannelRejected=false;
+          try { donor.samplePhaseLinkedCurveFlickerHand.execute(state,{curveChannelId:'curve',flickerChannelId:'curve'},{}); }
+          catch(error) { sameChannelRejected=/requires distinct curve and flicker channels/.test(String(error)); }
+          if(!sameChannelRejected)throw new Error('ambiguous same-channel binding was accepted');
+
+          const forgedCurve=structuredClone(state);
+          forgedCurve.parameterCurveSource.wrapMode='clamp';
+          forgedCurve.parameterCurveSourceHash=runtime.hashValue(forgedCurve.parameterCurveSource);
+          let curveForgeryRejected=false;
+          try { donor.validatePhaseLinkedCurveFlickerSample(forgedCurve,r.selected.phase_a); }
+          catch(error) { curveForgeryRejected=/requires parameter curve wrapMode loop/.test(String(error)); }
+          if(!curveForgeryRejected)throw new Error('self-consistent clamped-curve semantic forgery was accepted');
+
+          const forgedFlicker=structuredClone(state);
+          forgedFlicker.flickerCycleSource.interpolation='invented';
+          forgedFlicker.flickerCycleSourceHash=runtime.hashValue(forgedFlicker.flickerCycleSource);
+          let flickerForgeryRejected=false;
+          try { donor.validatePhaseLinkedCurveFlickerSample(forgedFlicker,r.selected.phase_a); }
+          catch(error) { flickerForgeryRejected=/interpolation is invalid/.test(String(error)); }
+          if(!flickerForgeryRejected)throw new Error('self-consistent flicker semantic forgery was accepted');
+
+          const challenges={
+            contract:'AXM_CREATIVE_VFX_PHASE_LINKED_CURVE_FLICKER_CHALLENGES',
+            version:1,
+            caller_neutral_replay:'PASS',
+            caller_requests_unchanged:'PASS',
+            initial_state_unchanged:'PASS',
+            exact_whole_group_cycle_seam:'PASS',
+            values_remain_independent:'PASS',
+            exact_vs_roomy_observer_capacity:'PASS',
+            one_below_observer_capacity:'REJECTED_AS_REQUIRED',
+            self_consistent_linked_sample_tamper:'REJECTED_AS_REQUIRED',
+            ambiguous_same_channel_binding:'REJECTED_AS_REQUIRED',
+            retained_clamped_curve_semantic_forgery:'REJECTED_AS_REQUIRED',
+            retained_flicker_semantic_forgery:'REJECTED_AS_REQUIRED'
+          };
+          await writeFile(root+'challenges.json',JSON.stringify(challenges,null,2)+'\n');
+          console.log('vfx_phase_linked_curve_flicker_truth_gates=PASS');
+          console.log(`phase_a_sample_hash=${r.selected.phase_a.sampleHash}`);
+          console.log(`phase_b_sample_hash=${r.selected.phase_b.sampleHash}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify both derived linked-sample observations
+        run: |
+          root=creative-render/build/vfx-phase-linked-curve-flicker
+          cat > "$root/phase-a.axmrender" <<'EOF_REQ'
+          AXM_RENDER_REQUEST 1
+          scene phase-a.axmscene
+          backend axm.native.cpu.reference
+          width 640
+          height 360
+          format ppm-rgb8
+          output phase-a.ppm
+          EOF_REQ
+          cat > "$root/phase-b.axmrender" <<'EOF_REQ'
+          AXM_RENDER_REQUEST 1
+          scene phase-b.axmscene
+          backend axm.native.cpu.reference
+          width 640
+          height 360
+          format ppm-rgb8
+          output phase-b.ppm
+          EOF_REQ
+          for name in phase-a phase-b; do
+            render-fabric/build/axm-render --request "$root/$name.axmrender" --receipt "$root/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$root/$name.axmrender" "$root/$name.axmreceipt"
+          done
+
+      - name: Bind independent donor samples to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile,writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-phase-linked-curve-flicker/';
+          const receipt=JSON.parse(await readFile(root+'phase-linked.receipt.json','utf8'));
+          const renders={};
+          for(const name of ['phase-a','phase-b']){
+            const [scene,request,renderReceipt,frame]=await Promise.all([
+              readFile(root+name+'.axmscene'),
+              readFile(root+name+'.axmrender'),
+              readFile(root+name+'.axmreceipt'),
+              readFile(root+name+'.ppm'),
+            ]);
+            renders[name]={
+              scene_sha256:sha(scene),
+              request_sha256:sha(request),
+              receipt_sha256:sha(renderReceipt),
+              frame_sha256:sha(frame),
+              frame_bytes:frame.length,
+            };
+          }
+          if(renders['phase-a'].scene_sha256!==receipt.outputs.phase_a_scene.sha256||renders['phase-b'].scene_sha256!==receipt.outputs.phase_b_scene.sha256)throw new Error('native render scene input binding drifted');
+          if(renders['phase-a'].frame_sha256===renders['phase-b'].frame_sha256)throw new Error('independent donor sample difference did not reach distinct native frame bytes');
+          const evidence={
+            contract:'AXM_CREATIVE_VFX_PHASE_LINKED_CURVE_FLICKER_NATIVE_PIXEL_EVIDENCE',
+            version:1,
+            render_fabric_revision:'6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b',
+            receipt_replay_verification:'PASS',
+            fixed_geometry_sha256:receipt.native_observer.phase_a.geometry_sha256,
+            values_combined:false,
+            scheduler_authority_acquired:false,
+            frames_differ:true,
+            renders,
+            claim_boundary:'Different receipt-verified native pixels prove propagation of two independently donor-sampled values through one replaceable neutral observer. They do not prove continuous animation, synchronization quality, flicker comfort or photosensitivity safety, effect meaning, aesthetics, accessibility, or realtime performance.'
+          };
+          await writeFile(root+'native-pixels.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_phase_linked_curve_flicker_native_pixels=PASS');
+          console.log(`phase_a_frame_sha256=${renders['phase-a'].frame_sha256}`);
+          console.log(`phase_b_frame_sha256=${renders['phase-b'].frame_sha256}`);
+          NODE
+
+      - name: Upload retained proof, including failed attempts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-phase-linked-curve-flicker-native-proof
+          path: creative-render/build/vfx-phase-linked-curve-flicker/
+          if-no-files-found: warn
