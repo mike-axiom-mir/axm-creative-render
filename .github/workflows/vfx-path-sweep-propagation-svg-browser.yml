@@ -1,0 +1,216 @@
+name: vfx-path-sweep-propagation-svg-browser
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vfx-path-sweep-propagation-svg-browser-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-vfx-path-sweep-propagation-svg-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact Creative Render revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: 34964555cf43b3c95e0c8da7edd136e12b0536ff
+          path: visual-effect-fabric
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Prepare retained attempt evidence before gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=creative-render/build/vfx-path-sweep-propagation-svg-browser
+          mkdir -p "$root"
+          creative_sha="$(git -C creative-render rev-parse HEAD)"
+          donor_sha="$(git -C visual-effect-fabric rev-parse HEAD)"
+          expected_creative="${{ github.event.pull_request.head.sha || github.sha }}"
+          expected_donor="34964555cf43b3c95e0c8da7edd136e12b0536ff"
+          cat > "$root/checkout-provenance.json" <<EOF_JSON
+          {
+            "creative_render_expected": "$expected_creative",
+            "creative_render_checked_out": "$creative_sha",
+            "visual_effect_fabric_expected": "$expected_donor",
+            "visual_effect_fabric_checked_out": "$donor_sha",
+            "authority": "EVIDENCE_ONLY"
+          }
+          EOF_JSON
+          cat > "$root/attempt.json" <<'EOF_JSON'
+          {
+            "lane": "vfx-path-sweep-propagation-svg-browser",
+            "canonical_authority": "retained caller path source plus retained VFX sweep-frame and propagation-front sources",
+            "derived_rebuildable": ["path sweep frames", "ribbon boundaries", "indexed strip connectivity", "propagation weight sets"],
+            "derived_replaceable": ["SVG realization", "browser probe", "browser RGBA", "screenshots"],
+            "automatic_aesthetic_acceptance": false
+          }
+          EOF_JSON
+          test "$creative_sha" = "$expected_creative"
+          test "$donor_sha" = "$expected_donor"
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run pinned current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Build source-honest sweep propagation SVG proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { mkdir, readFile, writeFile } from 'node:fs/promises';
+          import { resolve } from 'node:path';
+          import { sha256 } from './creative-render/src/creative_scene_operator.mjs';
+          import { observeVisualEffectPathSweepPropagationStaticSvg } from './creative-render/src/vfx_path_sweep_propagation_svg_browser_bridge.mjs';
+          const root='creative-render/build/vfx-path-sweep-propagation-svg-browser';
+          await mkdir(root,{recursive:true});
+          const observed=await observeVisualEffectPathSweepPropagationStaticSvg(resolve('visual-effect-fabric'),{vfxRevision:'34964555cf43b3c95e0c8da7edd136e12b0536ff'});
+          const files={
+            'prepared-donor-state.json':observed.donorStateBytes,
+            'path-sweep-propagation-native.receipt.json':observed.nativeReceiptBytes,
+            'phase-a.svg':observed.phaseASvg,
+            'phase-b.svg':observed.phaseBSvg,
+            'full-weight.svg':observed.fullWeightSvg,
+            'alternate-presentation.svg':observed.alternatePresentationSvg,
+            'browser-probe.html':observed.probeHtml,
+          };
+          const outputs={};
+          for(const [name,bytes] of Object.entries(files)){await writeFile(`${root}/${name}`,bytes);outputs[name]={sha256:sha256(bytes),bytes:bytes.length};}
+          const provenance=JSON.parse(await readFile(`${root}/checkout-provenance.json`,'utf8'));
+          const receipt={
+            contract:'AXM_CREATIVE_VFX_PATH_SWEEP_PROPAGATION_SVG_BROWSER_BUILD_RECEIPT',version:1,
+            checkout_provenance:provenance,
+            visual_effect_fabric:observed.observation,
+            outputs,
+            authority:{
+              canonical:'retained caller path source plus retained VFX sweep-frame and propagation-front sources',
+              derived_rebuildable:['path sweep frames','ribbon boundaries','indexed strip connectivity','propagation weight sets'],
+              derived_replaceable:['SVG realization','browser probe','browser RGBA','screenshots']
+            }
+          };
+          const receiptBytes=Buffer.from(JSON.stringify(receipt,null,2)+'\n');
+          await writeFile(`${root}/build.receipt.json`,receiptBytes);
+          console.log('vfx_path_sweep_propagation_svg_build=PASS');
+          console.log(`phase_a_svg_sha256=${outputs['phase-a.svg'].sha256}`);
+          console.log(`phase_b_svg_sha256=${outputs['phase-b.svg'].sha256}`);
+          console.log(`receipt_sha256=${sha256(receiptBytes)}`);
+          NODE
+
+      - name: Independently assert authority, replaceability and fail-closed gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-path-sweep-propagation-svg-browser/';
+          const names=['build.receipt.json','checkout-provenance.json','prepared-donor-state.json','path-sweep-propagation-native.receipt.json','phase-a.svg','phase-b.svg','full-weight.svg','alternate-presentation.svg','browser-probe.html'];
+          const values=Object.fromEntries(await Promise.all(names.map(async name=>[name,await readFile(root+name)])));
+          const r=JSON.parse(values['build.receipt.json']),v=r.visual_effect_fabric,p=JSON.parse(values['checkout-provenance.json']);
+          if(r.contract!=='AXM_CREATIVE_VFX_PATH_SWEEP_PROPAGATION_SVG_BROWSER_BUILD_RECEIPT'||r.version!==1)throw new Error('build receipt drifted');
+          if(p.creative_render_expected!==p.creative_render_checked_out||p.visual_effect_fabric_expected!==p.visual_effect_fabric_checked_out)throw new Error('checkout provenance drifted');
+          if(v.donor_revision!=='34964555cf43b3c95e0c8da7edd136e12b0536ff'||v.static_graph_id!=='fx.geometry.path-sweep-propagation-static-svg'||v.static_hand_id!=='fx.geometry.path-sweep-propagation-static-svg-realize')throw new Error('expected current donor SVG graph/Hand was not exercised');
+          if(v.derived.phase_a_weight_set_hash===v.derived.phase_b_weight_set_hash||v.derived.geometry_fixed_across_phases!==true)throw new Error('verified phase/fixed-geometry boundary drifted');
+          if(v.capacity_challenge.exact_equals_roomy!==true||v.capacity_challenge.one_below_segments_rejected!==true||v.capacity_challenge.one_below_output_points_rejected!==true)throw new Error('structural capacity boundary failed');
+          if(v.presentation_challenge.same_weight_set_hash!==true||v.presentation_challenge.same_indexed_strip_set_hash!==true||v.presentation_challenge.svg_bytes_changed!==true)throw new Error('presentation replaceability boundary failed');
+          if(v.full_weight_endpoint.phase!==1||v.full_weight_endpoint.min_weight!==1||v.full_weight_endpoint.max_weight!==1||v.full_weight_endpoint.local_polygon_opacity_omitted!==true)throw new Error('full-weight renderer-local no-op boundary failed');
+          if(v.derived_tamper_challenge.recomputed_self_consistent_hash!==true||v.derived_tamper_challenge.rejected!==true)throw new Error('self-consistent derived tamper was not rejected');
+          if(v.semantic_forgery_challenge.recomputed_self_consistent_hash!==true||v.semantic_forgery_challenge.rejected!==true)throw new Error('self-consistent semantic forgery was not rejected');
+          for(const [name,row] of Object.entries(r.outputs)){if(!values[name]||row.sha256!==sha(values[name])||row.bytes!==values[name].length)throw new Error(`retained output byte binding drifted: ${name}`);}
+          if(sha(values['phase-a.svg'])===sha(values['phase-b.svg']))throw new Error('phase A/B donor SVG bytes unexpectedly match');
+          if(sha(values['phase-a.svg'])===sha(values['alternate-presentation.svg']))throw new Error('presentation challenge did not change replaceable SVG bytes');
+          if(/<polygon\b[^>]*\sopacity=/i.test(values['full-weight.svg'].toString('utf8')))throw new Error('full-weight SVG retained local polygon opacity');
+          if(v.truth_boundary.browser_pixels_proven!==false||v.truth_boundary.opacity_semantics_proven!==false||v.truth_boundary.reveal_semantics_proven!==false||v.truth_boundary.material_semantics_proven!==false||v.truth_boundary.consumer_semantics_proven!==false||v.truth_boundary.aesthetic_quality_proven!==false)throw new Error('pre-browser truth boundary was promoted');
+          const evidence={
+            contract:'AXM_CREATIVE_VFX_PATH_SWEEP_PROPAGATION_SVG_INDEPENDENT_EVIDENCE',version:1,
+            build_receipt_sha256:sha(values['build.receipt.json']),donor_revision:v.donor_revision,
+            path_source_hash:v.retained.path_source_hash,sweep_source_hash:v.retained.sweep_source_hash,propagation_source_hash:v.retained.propagation_source_hash,
+            indexed_strip_set_hash:v.derived.indexed_strip_set_hash,phase_a_weight_set_hash:v.derived.phase_a_weight_set_hash,phase_b_weight_set_hash:v.derived.phase_b_weight_set_hash,
+            gates:{checkout_exact:'PASS',source_authority:'PASS',derived_rebuild_lineage:'PASS',fixed_geometry_across_phases:'PASS',capacity_fail_closed:'PASS',derived_tamper_rejected:'PASS',semantic_forgery_rejected:'PASS',presentation_replaceability:'PASS',full_weight_local_no_op:'PASS',pre_browser_truth_boundary:'PASS'}
+          };
+          await writeFile(root+'independent-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_path_sweep_propagation_svg_lineage=PASS');
+          NODE
+
+      - name: Locate installed browser and retain exact version
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=creative-render/build/vfx-path-sweep-propagation-svg-browser
+          browser="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || true)"
+          if [ -z "$browser" ]; then echo "No supported Chromium-family browser is installed" >&2; exit 1; fi
+          printf '%s\n' "$browser" > "$root/browser-path.txt"
+          "$browser" --version | tee "$root/browser-version.txt"
+
+      - name: Rasterize exact donor SVGs through the real headless browser
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=creative-render/build/vfx-path-sweep-propagation-svg-browser
+          browser="$(cat "$root/browser-path.txt")"
+          probe_uri="file://$(realpath "$root/browser-probe.html")"
+          "$browser" --headless=new --no-sandbox --disable-gpu --allow-file-access-from-files --virtual-time-budget=5000 --dump-dom "$probe_uri" > "$root/browser-probe.dump.html"
+          grep -q 'data-axm-done="true"' "$root/browser-probe.dump.html"
+          "$browser" --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=640,420 --screenshot="$PWD/$root/phase-a-browser.png" "file://$(realpath "$root/phase-a.svg")"
+          "$browser" --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=640,420 --screenshot="$PWD/$root/phase-b-browser.png" "file://$(realpath "$root/phase-b.svg")"
+          test -s "$root/phase-a-browser.png" && test -s "$root/phase-b-browser.png"
+
+      - name: Verify and bind raw browser pixel evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { parsePathSweepPropagationSvgBrowserProbeDump, verifyPathSweepPropagationSvgBrowserRasterEvidence } from './creative-render/src/vfx_path_sweep_propagation_svg_browser_bridge.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-path-sweep-propagation-svg-browser/';
+          const [dump,probe,receiptBytes,browserVersionBytes,phaseAShot,phaseBShot]=await Promise.all([readFile(root+'browser-probe.dump.html'),readFile(root+'browser-probe.html'),readFile(root+'build.receipt.json'),readFile(root+'browser-version.txt'),readFile(root+'phase-a-browser.png'),readFile(root+'phase-b-browser.png')]);
+          const r=JSON.parse(receiptBytes),v=r.visual_effect_fabric;
+          if(sha(probe)!==r.outputs['browser-probe.html'].sha256)throw new Error('browser probe changed after build receipt');
+          const raster=verifyPathSweepPropagationSvgBrowserRasterEvidence(parsePathSweepPropagationSvgBrowserProbeDump(dump),{phaseASvgSha256:r.outputs['phase-a.svg'].sha256,phaseBSvgSha256:r.outputs['phase-b.svg'].sha256});
+          const sig='89504e470d0a1a0a';if(phaseAShot.subarray(0,8).toString('hex')!==sig||phaseBShot.subarray(0,8).toString('hex')!==sig)throw new Error('browser screenshots are not PNG');
+          const browserVersion=browserVersionBytes.toString('utf8').trim();if(!browserVersion)throw new Error('browser version evidence is empty');
+          const evidence={
+            contract:'AXM_CREATIVE_VFX_PATH_SWEEP_PROPAGATION_SVG_BROWSER_RASTER_EVIDENCE',version:1,
+            build_receipt_sha256:sha(receiptBytes),donor_revision:v.donor_revision,
+            path_source_hash:v.retained.path_source_hash,sweep_source_hash:v.retained.sweep_source_hash,propagation_source_hash:v.retained.propagation_source_hash,
+            indexed_strip_set_hash:v.derived.indexed_strip_set_hash,phase_a_weight_set_hash:v.derived.phase_a_weight_set_hash,phase_b_weight_set_hash:v.derived.phase_b_weight_set_hash,
+            browser:{version:browserVersion,version_sha256:sha(browserVersionBytes),mode:'headless-local-file',network_required:false},
+            raster,
+            screenshots:{phase_a:{sha256:sha(phaseAShot),bytes:phaseAShot.length},phase_b:{sha256:sha(phaseBShot),bytes:phaseBShot.length}},
+            authority:{canonical:'retained caller path source plus retained VFX sweep-frame and propagation-front sources',derived_rebuildable:['path sweep frames','ribbon boundaries','indexed strip connectivity','propagation weight sets'],svg_browser_rgba_and_screenshots:'DERIVED_REPLACEABLE_BROWSER_OUTPUT'},
+            truth_boundary:{proves:'the identified local browser decoded and rasterized exact hash-bound donor SVGs made from two verified propagation phases over fixed donor geometry',does_not_prove:'opacity/reveal/emission/material/game/UI/world meaning, continuous animation or timing, visual quality, accessibility, production readiness, GPU parity, target-device realtime performance, Firefox/WebKit equivalence, or cross-browser/cross-machine bitwise determinism'}
+          };
+          await writeFile(root+'browser-raster-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_path_sweep_propagation_svg_browser_observation=PASS');
+          console.log(`browser=${browserVersion}`);console.log(`different_pixels=${raster.different_pixels}`);console.log(`different_channels=${raster.different_channels}`);console.log(`sum_abs_channel_delta=${raster.sum_abs_channel_delta}`);console.log(`phase_a_rgba_fnv1a32=${raster.phase_a_rgba_fnv1a32}`);console.log(`phase_b_rgba_fnv1a32=${raster.phase_b_rgba_fnv1a32}`);
+          NODE
+
+      - name: Upload complete sweep propagation SVG browser proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-path-sweep-propagation-svg-browser-proof
+          path: creative-render/build/vfx-path-sweep-propagation-svg-browser/
+          if-no-files-found: warn
