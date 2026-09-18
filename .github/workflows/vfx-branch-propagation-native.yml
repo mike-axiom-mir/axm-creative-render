@@ -1,0 +1,268 @@
+name: vfx-branch-propagation-native
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vfx-branch-propagation-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-vfx-branch-propagation-native:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: 5195a72a57a807155bafbe77ab3c43ba862ba445
+          path: visual-effect-fabric
+
+      - name: Checkout pinned current Render Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Retain attempt identity before gates
+        run: |
+          mkdir -p creative-render/build/vfx-branch-propagation
+          cat > creative-render/build/vfx-branch-propagation/attempt.json <<EOF
+          {
+            "creative_render_head": "${GITHUB_SHA}",
+            "visual_effect_fabric_revision": "5195a72a57a807155bafbe77ab3c43ba862ba445",
+            "render_fabric_revision": "6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b",
+            "lane": "vfx-branch-propagation-native"
+          }
+          EOF
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run pinned current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Execute current donor-owned VFX branch propagation envelope
+        run: |
+          root=creative-render/build/vfx-branch-propagation
+          node creative-render/src/vfx_branch_propagation_native_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --vfx-revision 5195a72a57a807155bafbe77ab3c43ba862ba445 \
+            --phase-a-scene "$root/phase-a.axmscene" \
+            --phase-b-scene "$root/phase-b.axmscene" \
+            --donor-state "$root/donor-state.json" \
+            --receipt "$root/branch-propagation.receipt.json"
+
+      - name: Assert source authority, topology lineage, bounded work, and donor tamper rejection
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { pathToFileURL } from 'node:url';
+          import { resolve } from 'node:path';
+          import { branchPropagationEnvelopeToAxmScene } from './creative-render/src/vfx_branch_propagation_native_bridge.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-branch-propagation/';
+          const [receiptBytes,stateBytes,sceneA,sceneB]=await Promise.all([
+            readFile(root+'branch-propagation.receipt.json'),
+            readFile(root+'donor-state.json'),
+            readFile(root+'phase-a.axmscene'),
+            readFile(root+'phase-b.axmscene'),
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          const state=JSON.parse(stateBytes.toString('utf8'));
+          if(r.contract!=='AXM_CREATIVE_VFX_BRANCH_PROPAGATION_NATIVE_RECEIPT'||r.version!==1)throw new Error('branch propagation receipt drifted');
+          const v=r.visual_effect_fabric;
+          if(v.revision!=='5195a72a57a807155bafbe77ab3c43ba862ba445'||v.donor_graph_reused!==true)throw new Error('pinned current branch propagation donor not exercised');
+          if(v.graph_id!=='fx.growth.branching2d-propagation-front'||v.graph_version!=='0.1.0')throw new Error('branch propagation graph identity drifted');
+          if(v.caller_neutral_replay!=='PASS'||v.caller_requests_unchanged!==true||v.prepared_state_unchanged!==true)throw new Error('branch propagation caller/state boundary failed');
+          const branch=v.retained_branch_source;
+          const network=v.derived_branch_network;
+          const propagation=v.retained_propagation_source;
+          if(branch.schema!=='axm.branch-growth-source2d/v0.1'||branch.boundary_mode!=='clip')throw new Error('retained branch source semantics drifted');
+          if(network.schema!=='axm.branch-growth-network2d/v0.1'||network.derived!==true||network.rebuildable!==true||network.source_hash!==branch.source_hash)throw new Error('derived branch network boundary drifted');
+          if(propagation.schema!=='axm.propagation-front-source/v0.1'||propagation.algorithm!=='normalized-propagation-front1d/v0.1'||propagation.profile!=='smoothstep3-behind-front')throw new Error('retained propagation source semantics drifted');
+          for(const selected of [r.selected.phase_a,r.selected.phase_b]){
+            if(selected.schema!=='axm.branch-propagation-envelope2d/v0.1'||selected.algorithm!=='branch-root-path-propagation-envelope/v0.1')throw new Error('selected envelope semantics drifted');
+            if(selected.distanceMetric!=='root-path-actual-length'||selected.normalization!=='max-root-path-end-distance'||selected.sampleSites!=='segment-start-end'||selected.phaseMode!=='clamp')throw new Error('selected envelope fixed derivation drifted');
+            if(selected.branchSourceHash!==branch.source_hash||selected.networkHash!==network.network_hash||selected.propagationSourceHash!==propagation.source_hash)throw new Error('selected envelope lineage drifted');
+            if(selected.derived!==true||selected.rebuildable!==true||selected.segmentCount!==network.segment_count)throw new Error('selected envelope authority/cardinality drifted');
+          }
+          if(r.selected.phase_a.envelopeHash===r.selected.phase_b.envelopeHash)throw new Error('selected phases did not create distinct derived envelopes');
+          if(r.selected.clamped_low.phase!==0||r.selected.clamped_low.all_zero!==true||r.selected.clamped_high.phase!==1||r.selected.clamped_high.all_one!==true)throw new Error('branch propagation phase clamp drifted');
+          if(r.selected.exact_vs_roomy.identical!==true||r.selected.exact_vs_roomy.phase_b_envelope_hash!==r.selected.exact_vs_roomy.exact_envelope_hash)throw new Error('structural maxSegments changed derived meaning');
+          if(!Object.values(r.invariants).every(Boolean))throw new Error('branch propagation invariants failed');
+          if(r.native_observer.phase_a.geometry_sha256!==r.native_observer.phase_b.geometry_sha256)throw new Error('branch propagation observer geometry changed');
+          if(r.native_observer.phase_a.output_sha256===r.native_observer.phase_b.output_sha256)throw new Error('branch propagation derived weights did not change observer bytes');
+          if(r.native_observer.difference_channel!=='NEUTRAL_GRAYSCALE_FROM_DONOR_DERIVED_SEGMENT_MEAN_WEIGHT_ONLY')throw new Error('branch propagation observer difference channel drifted');
+          if(r.outputs.phase_a_scene.sha256!==sha(sceneA)||r.outputs.phase_b_scene.sha256!==sha(sceneB)||r.outputs.donor_state.sha256!==sha(stateBytes))throw new Error('branch propagation output byte binding drifted');
+          const truth=v.truth_boundary;
+          if(truth.retained_sources_authority!=='RETAINED_VFX_BRANCH_GROWTH_AND_PROPAGATION_FRONT_SOURCES'||truth.branch_network_authority!=='DERIVED_REBUILDABLE_VFX_BODY'||truth.propagation_envelopes_authority!=='DERIVED_REBUILDABLE_VFX_BODY'||truth.native_scenes_and_pixels_authority!=='DERIVED_REPLACEABLE_OBSERVER_BODIES')throw new Error('branch propagation authority labels drifted');
+          if(truth.reveal_or_growth_semantics_proven!==false||truth.opacity_or_emission_semantics_proven!==false||truth.animation_timing_proven!==false||truth.aesthetic_quality_proven!==false||truth.accessibility_proven!==false||truth.realtime_performance_proven!==false)throw new Error('unsupported branch propagation claim was promoted');
+
+          let observerBudgetRejected=false;
+          try { branchPropagationEnvelopeToAxmScene(state.branchGrowthNetworks[state.branchGrowthSource.id],r.selected.phase_b,{maxSegments:r.selected.phase_b.segmentCount-1}); }
+          catch(error) { observerBudgetRejected=/segment budget exceeded/.test(String(error)); }
+          if(!observerBudgetRejected)throw new Error('one-below observer segment capacity did not fail closed');
+
+          const runtime=await import(pathToFileURL(resolve('visual-effect-fabric/hand-lab/src/hand-runtime.mjs')).href);
+          const branchPropagation=await import(pathToFileURL(resolve('visual-effect-fabric/hand-lab/src/branch-propagation-envelope.mjs')).href);
+          const tamperedEnvelope=structuredClone(r.selected.phase_b);
+          tamperedEnvelope.segments[0].startWeight=tamperedEnvelope.segments[0].startWeight===0?0.25:0;
+          tamperedEnvelope.envelopeHash=runtime.hashValue({
+            schema:tamperedEnvelope.schema,algorithm:tamperedEnvelope.algorithm,distanceMetric:tamperedEnvelope.distanceMetric,
+            normalization:tamperedEnvelope.normalization,sampleSites:tamperedEnvelope.sampleSites,phaseMode:tamperedEnvelope.phaseMode,
+            branchSourceHash:tamperedEnvelope.branchSourceHash,networkHash:tamperedEnvelope.networkHash,propagationSourceHash:tamperedEnvelope.propagationSourceHash,
+            phase:tamperedEnvelope.phase,maxPathLength:tamperedEnvelope.maxPathLength,segmentCount:tamperedEnvelope.segmentCount,segments:tamperedEnvelope.segments,
+            derived:tamperedEnvelope.derived,rebuildable:tamperedEnvelope.rebuildable,
+          });
+          let envelopeTamperRejected=false;
+          try { branchPropagation.validateBranchPropagationEnvelope(state,tamperedEnvelope); }
+          catch(error) { envelopeTamperRejected=/does not match fresh source derivation/.test(String(error)); }
+          if(!envelopeTamperRejected)throw new Error('self-consistent derived envelope tamper was accepted');
+
+          const tamperedNetworkState=structuredClone(state);
+          const selectedNetwork=tamperedNetworkState.branchGrowthNetworks[tamperedNetworkState.branchGrowthSource.id];
+          const wasTerminal=selectedNetwork.segments[0].terminal;
+          selectedNetwork.segments[0].terminal=!wasTerminal;
+          selectedNetwork.terminalSegmentCount+=wasTerminal?-1:1;
+          selectedNetwork.networkHash=runtime.hashValue({schema:selectedNetwork.schema,sourceHash:selectedNetwork.sourceHash,segmentCount:selectedNetwork.segmentCount,clippedSegmentCount:selectedNetwork.clippedSegmentCount,terminalSegmentCount:selectedNetwork.terminalSegmentCount,segments:selectedNetwork.segments});
+          let networkTamperRejected=false;
+          try { branchPropagation.buildBranchPropagationEnvelopeHand.execute(tamperedNetworkState,{phase:0.5,maxSegments:4096},{}); }
+          catch(error) { networkTamperRejected=/does not match retained branch source rebuild/.test(String(error)); }
+          if(!networkTamperRejected)throw new Error('self-consistent derived network tamper was accepted');
+
+          const forgedBranch=structuredClone(state);
+          forgedBranch.branchGrowthSource.boundaryMode='wrap';
+          forgedBranch.branchGrowthSourceHash=runtime.hashValue(forgedBranch.branchGrowthSource);
+          let branchForgeryRejected=false;
+          try { branchPropagation.buildBranchPropagationEnvelopeHand.execute(forgedBranch,{phase:0.5,maxSegments:4096},{}); }
+          catch(error) { branchForgeryRejected=/boundary mode is invalid/.test(String(error)); }
+          if(!branchForgeryRejected)throw new Error('self-consistent retained branch semantic forgery was accepted');
+
+          const forgedPropagation=structuredClone(state);
+          forgedPropagation.propagationFrontSource.profile='linear-convenience/v9';
+          forgedPropagation.propagationFrontSourceHash=runtime.hashValue(forgedPropagation.propagationFrontSource);
+          let propagationForgeryRejected=false;
+          try { branchPropagation.buildBranchPropagationEnvelopeHand.execute(forgedPropagation,{phase:0.5,maxSegments:4096},{}); }
+          catch(error) { propagationForgeryRejected=/profile is invalid/.test(String(error)); }
+          if(!propagationForgeryRejected)throw new Error('self-consistent retained propagation semantic forgery was accepted');
+
+          let oneBelowDonorRejected=false;
+          try { branchPropagation.buildBranchPropagationEnvelopeHand.execute(state,{phase:0.5,maxSegments:network.segment_count-1},{}); }
+          catch(error) { oneBelowDonorRejected=/exceeds maxSegments/.test(String(error)); }
+          if(!oneBelowDonorRejected)throw new Error('one-below donor network capacity did not fail closed');
+          let oversizedDonorRejected=false;
+          try { branchPropagation.buildBranchPropagationEnvelopeHand.execute(state,{phase:0.5,maxSegments:4097},{}); }
+          catch(error) { oversizedDonorRejected=/integer within \[1,4096\]/.test(String(error)); }
+          if(!oversizedDonorRejected)throw new Error('oversized donor network work did not fail closed');
+
+          const challenges={
+            contract:'AXM_CREATIVE_VFX_BRANCH_PROPAGATION_CHALLENGES',version:1,
+            caller_neutral_replay:'PASS',caller_requests_unchanged:'PASS',prepared_state_unchanged:'PASS',
+            phase_domain_clamp:'PASS',exact_vs_roomy_segment_capacity:'PASS',
+            one_below_observer_capacity:'REJECTED_AS_REQUIRED',one_below_donor_capacity:'REJECTED_AS_REQUIRED',donor_oversized_work:'REJECTED_AS_REQUIRED',
+            self_consistent_derived_envelope_tamper:'REJECTED_AS_REQUIRED',self_consistent_derived_network_tamper:'REJECTED_AS_REQUIRED',
+            retained_branch_semantic_forgery:'REJECTED_AS_REQUIRED',retained_propagation_semantic_forgery:'REJECTED_AS_REQUIRED'
+          };
+          await writeFile(root+'challenges.json',JSON.stringify(challenges,null,2)+'\n');
+          console.log('vfx_branch_propagation_truth_gates=PASS');
+          console.log(`branch_source_hash=${branch.source_hash}`);
+          console.log(`network_hash=${network.network_hash}`);
+          console.log(`propagation_source_hash=${propagation.source_hash}`);
+          console.log(`phase_a_envelope_hash=${r.selected.phase_a.envelopeHash}`);
+          console.log(`phase_b_envelope_hash=${r.selected.phase_b.envelopeHash}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify both derived branch-propagation phases
+        run: |
+          root=creative-render/build/vfx-branch-propagation
+          cat > "$root/phase-a.axmrender" <<'EOF_REQ'
+          AXM_RENDER_REQUEST 1
+          scene phase-a.axmscene
+          backend axm.native.cpu.reference
+          width 640
+          height 640
+          format ppm-rgb8
+          output phase-a.ppm
+          EOF_REQ
+          cat > "$root/phase-b.axmrender" <<'EOF_REQ'
+          AXM_RENDER_REQUEST 1
+          scene phase-b.axmscene
+          backend axm.native.cpu.reference
+          width 640
+          height 640
+          format ppm-rgb8
+          output phase-b.ppm
+          EOF_REQ
+          for name in phase-a phase-b; do
+            render-fabric/build/axm-render --request "$root/$name.axmrender" --receipt "$root/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$root/$name.axmrender" "$root/$name.axmreceipt"
+          done
+
+      - name: Bind donor-owned branch propagation to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile,writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-branch-propagation/';
+          const receiptBytes=await readFile(root+'branch-propagation.receipt.json');
+          const receipt=JSON.parse(receiptBytes.toString('utf8'));
+          const renders={};
+          for(const name of ['phase-a','phase-b']){
+            const [scene,request,renderReceipt,frame]=await Promise.all([
+              readFile(root+name+'.axmscene'),readFile(root+name+'.axmrender'),readFile(root+name+'.axmreceipt'),readFile(root+name+'.ppm'),
+            ]);
+            renders[name]={scene_sha256:sha(scene),request_sha256:sha(request),receipt_sha256:sha(renderReceipt),frame_sha256:sha(frame),frame_bytes:frame.length};
+          }
+          if(renders['phase-a'].scene_sha256!==receipt.outputs.phase_a_scene.sha256||renders['phase-b'].scene_sha256!==receipt.outputs.phase_b_scene.sha256)throw new Error('branch propagation scene identity changed before native rendering');
+          if(renders['phase-a'].frame_sha256===renders['phase-b'].frame_sha256)throw new Error('derived branch propagation phase difference did not reach native frame bytes');
+          const evidence={
+            contract:'AXM_CREATIVE_VFX_BRANCH_PROPAGATION_NATIVE_EVIDENCE',version:1,
+            creative_receipt_sha256:sha(receiptBytes),
+            retained_branch_source_hash:receipt.visual_effect_fabric.retained_branch_source.source_hash,
+            branch_network_hash:receipt.visual_effect_fabric.derived_branch_network.network_hash,
+            retained_propagation_source_hash:receipt.visual_effect_fabric.retained_propagation_source.source_hash,
+            phase_a_envelope_hash:receipt.selected.phase_a.envelopeHash,
+            phase_b_envelope_hash:receipt.selected.phase_b.envelopeHash,
+            shared_geometry_sha256:receipt.native_observer.phase_a.geometry_sha256,
+            renders,render_receipt_replay:{'phase-a':'PASS','phase-b':'PASS'},
+            authority:{retained_sources:'RETAINED_VFX_BRANCH_GROWTH_AND_PROPAGATION_FRONT_SOURCES',branch_network:'DERIVED_REBUILDABLE_VFX_BODY',envelopes:'DERIVED_REBUILDABLE_VFX_BODY',scenes:'DERIVED_REPLACEABLE_OBSERVER_BODIES',pixels:'DERIVED_RENDER_FABRIC_OUTPUT'},
+            truth_boundary:{proves:'one current donor-owned branch-propagation graph can independently rebuild retained branch topology and retained propagation truth into root-path-distance weighted derived envelopes, preserve fixed geometry across explicit phases, fail closed on insufficient or excessive work, reject self-consistent retained/derived tampering, and carry legitimate donor-derived weight differences into independently receipt-verified native pixels',does_not_prove:'reveal or growth semantics, opacity or emission semantics, animation timing, aesthetic quality, accessibility, production suitability, realtime or target-device performance, GPU or browser equivalence, or cross-machine bitwise determinism'}
+          };
+          await writeFile(root+'native-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_branch_propagation_native_pixel_binding=PASS');
+          console.log(`phase_a_frame_sha256=${renders['phase-a'].frame_sha256}`);
+          console.log(`phase_b_frame_sha256=${renders['phase-b'].frame_sha256}`);
+          NODE
+
+      - name: Retain branch-propagation proof even when a gate fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-branch-propagation-native-proof
+          path: creative-render/build/vfx-branch-propagation
+          if-no-files-found: warn
