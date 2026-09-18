@@ -1,0 +1,231 @@
+name: vfx-propagation-front-native
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vfx-propagation-front-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-vfx-propagation-front-native:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Creative Render
+        uses: actions/checkout@v4
+        with:
+          path: creative-render
+
+      - name: Checkout pinned current Visual Effect Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-visual-effect-fabric
+          ref: ab9431e1d4003b37a0f3642c1361c645744a7308
+          path: visual-effect-fabric
+
+      - name: Checkout pinned current Render Fabric donor
+        uses: actions/checkout@v4
+        with:
+          repository: mike-axiom-mir/axm-render-fabric
+          ref: 6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b
+          path: render-fabric
+
+      - name: Retain attempt identity before gates
+        run: |
+          mkdir -p creative-render/build/vfx-propagation-front
+          cat > creative-render/build/vfx-propagation-front/attempt.json <<EOF
+          {
+            "creative_render_head": "${GITHUB_SHA}",
+            "visual_effect_fabric_revision": "ab9431e1d4003b37a0f3642c1361c645744a7308",
+            "render_fabric_revision": "6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b",
+            "lane": "vfx-propagation-front-native"
+          }
+          EOF
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Creative Render tests
+        run: npm --prefix creative-render test
+
+      - name: Run pinned current VFX Hand-lab tests
+        run: npm --prefix visual-effect-fabric/hand-lab test
+
+      - name: Execute current renderer-neutral VFX propagation front
+        run: |
+          root=creative-render/build/vfx-propagation-front
+          node creative-render/src/vfx_propagation_front_native_cli.mjs build \
+            --vfx-root visual-effect-fabric \
+            --vfx-revision ab9431e1d4003b37a0f3642c1361c645744a7308 \
+            --phase-a-scene "$root/phase-a.axmscene" \
+            --phase-b-scene "$root/phase-b.axmscene" \
+            --donor-state "$root/donor-state.json" \
+            --receipt "$root/propagation-front.receipt.json"
+
+      - name: Assert source authority, derived-phase boundaries, bounded work, and donor tamper rejection
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { pathToFileURL } from 'node:url';
+          import { resolve } from 'node:path';
+          import { propagationFrontSampleSetToAxmScene } from './creative-render/src/vfx_propagation_front_native_bridge.mjs';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-propagation-front/';
+          const [receiptBytes,stateBytes,sceneA,sceneB]=await Promise.all([
+            readFile(root+'propagation-front.receipt.json'),
+            readFile(root+'donor-state.json'),
+            readFile(root+'phase-a.axmscene'),
+            readFile(root+'phase-b.axmscene'),
+          ]);
+          const r=JSON.parse(receiptBytes.toString('utf8'));
+          const state=JSON.parse(stateBytes.toString('utf8'));
+          if(r.contract!=='AXM_CREATIVE_VFX_PROPAGATION_FRONT_NATIVE_RECEIPT'||r.version!==1)throw new Error('propagation receipt drifted');
+          const v=r.visual_effect_fabric;
+          if(v.revision!=='ab9431e1d4003b37a0f3642c1361c645744a7308'||v.donor_graph_reused!==true)throw new Error('pinned current propagation donor not exercised');
+          if(v.graph_id!=='fx.animation.propagation-front1d'||v.graph_version!=='0.1.0')throw new Error('propagation graph identity drifted');
+          if(v.caller_neutral_replay!=='PASS'||v.caller_request_unchanged!==true)throw new Error('propagation caller boundary failed');
+          const source=v.retained_source;
+          if(source.schema!=='axm.propagation-front-source/v0.1'||source.algorithm!=='normalized-propagation-front1d/v0.1')throw new Error('retained propagation source semantics drifted');
+          if(source.space_domain!=='normalized-distance'||source.phase_domain!=='normalized-progress'||source.phase_mode!=='clamp'||source.output_range!=='[0,1]')throw new Error('retained propagation source contract drifted');
+          if(source.provenance?.sourceReuse!=='none')throw new Error('propagation source provenance drifted');
+          if(r.selected.phase_a.sourceHash!==source.source_hash||r.selected.phase_b.sourceHash!==source.source_hash)throw new Error('selected phases lost retained source lineage');
+          if(r.selected.phase_a.derived!==true||r.selected.phase_a.rebuildable!==true||r.selected.phase_b.derived!==true||r.selected.phase_b.rebuildable!==true)throw new Error('selected sample authority drifted');
+          if(r.selected.phase_a.sampleSetHash===r.selected.phase_b.sampleSetHash)throw new Error('selected propagation phases did not remain distinct derived bodies');
+          if(!r.selected.clamped_low.all_zero||r.selected.clamped_low.phase!==0||!r.selected.clamped_high.all_one||r.selected.clamped_high.phase!==1)throw new Error('propagation clamp boundary drifted');
+          if(r.selected.alternate_resolution.source_hash!==source.source_hash||r.selected.alternate_resolution.sample_set_hash===r.selected.phase_b.sampleSetHash)throw new Error('derived sample-resolution boundary drifted');
+          if(!Object.values(r.invariants).every(Boolean))throw new Error('propagation invariants failed');
+          if(r.native_observer.phase_a.geometry_sha256!==r.native_observer.phase_b.geometry_sha256)throw new Error('phase observer geometry changed');
+          if(r.native_observer.phase_a.output_sha256===r.native_observer.phase_b.output_sha256)throw new Error('derived propagation weights did not change observation bytes');
+          if(r.native_observer.difference_channel!=='NEUTRAL_GRAYSCALE_FROM_DONOR_DERIVED_PROPAGATION_WEIGHT_ONLY')throw new Error('observer difference channel drifted');
+          if(r.outputs.phase_a_scene.sha256!==sha(sceneA)||r.outputs.phase_b_scene.sha256!==sha(sceneB)||r.outputs.donor_state.sha256!==sha(stateBytes))throw new Error('proof output byte binding drifted');
+          const truth=v.truth_boundary;
+          if(truth.retained_source_authority!=='RETAINED_VFX_PROPAGATION_FRONT_SOURCE'||truth.sample_sets_authority!=='DERIVED_REBUILDABLE_VFX_BODY'||truth.native_scenes_and_pixels_authority!=='DERIVED_REPLACEABLE_OBSERVER_BODIES')throw new Error('propagation truth authority drifted');
+          if(truth.reveal_or_growth_semantics_proven!==false||truth.animation_timing_proven!==false||truth.aesthetic_quality_proven!==false||truth.accessibility_proven!==false||truth.realtime_performance_proven!==false)throw new Error('unsupported propagation claim was promoted');
+
+          let observerBudgetRejected=false;
+          try { propagationFrontSampleSetToAxmScene(r.selected.phase_b,{maxSamples:r.selected.phase_b.sampleCount-1}); }
+          catch(error) { observerBudgetRejected=/sample budget exceeded/.test(String(error)); }
+          if(!observerBudgetRejected)throw new Error('one-below observer capacity did not fail closed');
+
+          const runtime=await import(pathToFileURL(resolve('visual-effect-fabric/hand-lab/src/hand-runtime.mjs')).href);
+          const propagation=await import(pathToFileURL(resolve('visual-effect-fabric/hand-lab/src/propagation-front1d.mjs')).href);
+          const tampered=structuredClone(r.selected.phase_b);
+          const index=Math.max(1,Math.min(tampered.sampleCount-2,Math.floor(tampered.sampleCount*0.61)));
+          tampered.samples[index].weight=Number((tampered.samples[index].weight>0.5?tampered.samples[index].weight-0.01:tampered.samples[index].weight+0.01).toFixed(6));
+          tampered.sampleSetHash=runtime.hashValue({schema:tampered.schema,sourceHash:tampered.sourceHash,phase:tampered.phase,sampleCount:tampered.sampleCount,samples:tampered.samples,minWeight:tampered.minWeight,maxWeight:tampered.maxWeight,derived:tampered.derived,rebuildable:tampered.rebuildable});
+          let derivedTamperRejected=false;
+          try { propagation.validatePropagationFrontSampleSet(state,tampered); }
+          catch(error) { derivedTamperRejected=/weight mismatch|extrema mismatch/.test(String(error)); }
+          if(!derivedTamperRejected)throw new Error('self-consistent derived propagation tamper was accepted');
+
+          const forgedState=structuredClone(state);
+          forgedState.propagationFrontSource.algorithm='forged-propagation/v9';
+          forgedState.propagationFrontSourceHash=runtime.hashValue(forgedState.propagationFrontSource);
+          let semanticForgeryRejected=false;
+          try { propagation.validatePropagationFrontSampleSet(forgedState,r.selected.phase_b); }
+          catch(error) { semanticForgeryRejected=/algorithm is invalid/.test(String(error)); }
+          if(!semanticForgeryRejected)throw new Error('self-consistent retained propagation semantic forgery was accepted');
+
+          let oversizedRejected=false;
+          try { propagation.buildPropagationFrontSamplesHand.execute(state,{phase:0.5,sampleCount:4098}); }
+          catch(error) { oversizedRejected=/integer within \[2,4097\]/.test(String(error)); }
+          if(!oversizedRejected)throw new Error('donor oversized sample work did not fail closed');
+
+          const challenges={
+            contract:'AXM_CREATIVE_VFX_PROPAGATION_FRONT_CHALLENGES',version:1,
+            caller_neutral_replay:'PASS',caller_request_unchanged:'PASS',
+            phase_domain_clamp:'PASS',alternate_resolution_preserves_source:'PASS',
+            exact_vs_roomy_observer_capacity:'PASS',one_below_observer_capacity:'REJECTED_AS_REQUIRED',
+            donor_oversized_sample_work:'REJECTED_AS_REQUIRED',
+            self_consistent_derived_sample_tamper:'REJECTED_AS_REQUIRED',
+            retained_semantic_forgery:'REJECTED_AS_REQUIRED'
+          };
+          await writeFile(root+'challenges.json',JSON.stringify(challenges,null,2)+'\n');
+          console.log('vfx_propagation_front_truth_gates=PASS');
+          console.log(`retained_source_hash=${source.source_hash}`);
+          console.log(`phase_a_sample_set_hash=${r.selected.phase_a.sampleSetHash}`);
+          console.log(`phase_b_sample_set_hash=${r.selected.phase_b.sampleSetHash}`);
+          NODE
+
+      - name: Build and test native Render Fabric
+        run: |
+          cmake -S render-fabric -B render-fabric/build
+          cmake --build render-fabric/build --config Release
+          ctest --test-dir render-fabric/build --output-on-failure
+
+      - name: Render and independently verify both derived propagation phases
+        run: |
+          root=creative-render/build/vfx-propagation-front
+          cat > "$root/phase-a.axmrender" <<'EOF_REQ'
+          AXM_RENDER_REQUEST 1
+          scene phase-a.axmscene
+          backend axm.native.cpu.reference
+          width 640
+          height 240
+          format ppm-rgb8
+          output phase-a.ppm
+          EOF_REQ
+          cat > "$root/phase-b.axmrender" <<'EOF_REQ'
+          AXM_RENDER_REQUEST 1
+          scene phase-b.axmscene
+          backend axm.native.cpu.reference
+          width 640
+          height 240
+          format ppm-rgb8
+          output phase-b.ppm
+          EOF_REQ
+          for name in phase-a phase-b; do
+            render-fabric/build/axm-render --request "$root/$name.axmrender" --receipt "$root/$name.axmreceipt"
+            render-fabric/build/axm-render-verify-receipt "$root/$name.axmrender" "$root/$name.axmreceipt"
+          done
+
+      - name: Bind derived propagation weights to native pixel evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile,writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const root='creative-render/build/vfx-propagation-front/';
+          const receiptBytes=await readFile(root+'propagation-front.receipt.json');
+          const receipt=JSON.parse(receiptBytes.toString('utf8'));
+          const renders={};
+          for(const name of ['phase-a','phase-b']){
+            const [scene,request,renderReceipt,frame]=await Promise.all([
+              readFile(root+name+'.axmscene'),readFile(root+name+'.axmrender'),readFile(root+name+'.axmreceipt'),readFile(root+name+'.ppm'),
+            ]);
+            renders[name]={scene_sha256:sha(scene),request_sha256:sha(request),receipt_sha256:sha(renderReceipt),frame_sha256:sha(frame),frame_bytes:frame.length};
+          }
+          if(renders['phase-a'].scene_sha256!==receipt.outputs.phase_a_scene.sha256||renders['phase-b'].scene_sha256!==receipt.outputs.phase_b_scene.sha256)throw new Error('propagation scene identity changed before native rendering');
+          if(renders['phase-a'].frame_sha256===renders['phase-b'].frame_sha256)throw new Error('derived propagation phase difference did not reach native frame bytes');
+          const evidence={
+            contract:'AXM_CREATIVE_VFX_PROPAGATION_FRONT_NATIVE_EVIDENCE',version:1,
+            creative_receipt_sha256:sha(receiptBytes),
+            retained_source_hash:receipt.visual_effect_fabric.retained_source.source_hash,
+            phase_a_sample_set_hash:receipt.selected.phase_a.sampleSetHash,
+            phase_b_sample_set_hash:receipt.selected.phase_b.sampleSetHash,
+            shared_geometry_sha256:receipt.native_observer.phase_a.geometry_sha256,
+            renders,render_receipt_replay:{'phase-a':'PASS','phase-b':'PASS'},
+            authority:{retained_source:'RETAINED_VFX_PROPAGATION_FRONT_SOURCE',sample_sets:'DERIVED_REBUILDABLE_VFX_BODY',scenes:'DERIVED_REPLACEABLE_OBSERVER_BODIES',pixels:'DERIVED_RENDER_FABRIC_OUTPUT'},
+            truth_boundary:{proves:'one current retained renderer-neutral propagation-front source can rebuild distinct explicit derived phases at fixed geometry, clamp outside phase work to exact endpoints, change derived sampling resolution without rewriting source meaning, fail closed on insufficient observer capacity or excessive donor work, reject self-consistent source/derived tampering, and carry legitimate neutral weight differences into independently receipt-verified native pixels',does_not_prove:'reveal, growth, opacity, emission, gameplay, UI, material or world semantics; animation timing or frame pacing; aesthetics; accessibility; realtime or target-device performance; GPU/browser equivalence; or cross-machine bitwise determinism'}
+          };
+          await writeFile(root+'native-evidence.json',JSON.stringify(evidence,null,2)+'\n');
+          console.log('vfx_propagation_front_native=PASS');
+          console.log(`phase_a_frame_sha256=${renders['phase-a'].frame_sha256}`);
+          console.log(`phase_b_frame_sha256=${renders['phase-b'].frame_sha256}`);
+          NODE
+
+      - name: Upload complete propagation-front native proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axm-creative-render-vfx-propagation-front-native-proof
+          path: creative-render/build/vfx-propagation-front/
+          if-no-files-found: warn
