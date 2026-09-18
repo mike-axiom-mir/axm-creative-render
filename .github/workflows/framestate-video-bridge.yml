@@ -16,16 +16,17 @@ jobs:
   verify-framestate-video:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Creative Render
+      - name: Checkout exact Creative Render head
         uses: actions/checkout@v4
         with:
           path: creative-render
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Checkout pinned Universal Creation donor
+      - name: Checkout pinned current Universal Creation donor
         uses: actions/checkout@v4
         with:
           repository: mike-axiom-mir/axm-universal-creation
-          ref: 30d62f80c84732dbeebd1e58984525b3f8ec1d60
+          ref: 724dde638763253ba1d4cf93d13aaa9a4981e4bf
           path: universal-creation
 
       - name: Checkout pinned Render Fabric donor
@@ -51,6 +52,42 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      - name: Record exact checked-out source and donor provenance before gates
+        env:
+          AXM_CREATIVE_RENDER_EXACT_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p creative-render/build
+          creative_head="$(git -C creative-render rev-parse HEAD)"
+          uc_head="$(git -C universal-creation rev-parse HEAD)"
+          render_head="$(git -C render-fabric rev-parse HEAD)"
+          framestate_head="$(git -C framestate rev-parse HEAD)"
+          test "$creative_head" = "$AXM_CREATIVE_RENDER_EXACT_HEAD"
+          test "$uc_head" = "724dde638763253ba1d4cf93d13aaa9a4981e4bf"
+          test "$render_head" = "6fd39ffa5566ce2f6f9e6452c4ec1fdc9603313b"
+          test "$framestate_head" = "41c9c6827e64613b523b28536ab864dddf046d93"
+          python - "$creative_head" "$uc_head" "$render_head" "$framestate_head" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          creative_head, uc_head, render_head, framestate_head = sys.argv[1:]
+          record = {
+              "schema": "axm.creative-render.framestate-video-donor-provenance/v0.1",
+              "creative_render_exact_head": creative_head,
+              "universal_creation_revision": uc_head,
+              "render_fabric_revision": render_head,
+              "framestate_revision": framestate_head,
+              "authority": "EVIDENCE_ONLY",
+              "recorded_before_execution_gates": True,
+          }
+          Path("creative-render/build/framestate-donor-provenance.json").write_text(
+              json.dumps(record, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          cat creative-render/build/framestate-donor-provenance.json
 
       - name: Install explicit FFmpeg video assembly boundary for CI proof
         run: |
@@ -137,23 +174,6 @@ jobs:
           test -s creative-render/build/framestate-render/video.mp4
           test -s creative-render/build/framestate-render/render-receipt.json
 
-      - name: Upload FrameState render diagnostics on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: axm-creative-render-framestate-render-failure
-          if-no-files-found: warn
-          path: |
-            creative-render/build/framestate-project.json
-            creative-render/build/framestate-project.receipt.json
-            creative-render/build/framestate-inspect.json
-            creative-render/build/framestate-ffmpeg-environment.txt
-            creative-render/build/framestate-render-output.json
-            creative-render/build/framestate-render-stderr.txt
-            creative-render/build/framestate-render-returncode.txt
-            creative-render/build/framestate-render-diagnostic.txt
-            creative-render/build/framestate-render/
-
       - name: FrameState deterministic repeat verification
         run: |
           PYTHONPATH=framestate/src python -m axm_framestate verify-repeat \
@@ -201,16 +221,23 @@ jobs:
           console.log(`verification_digest=${evidence.framestate_render_output_verification_digest}`);
           NODE
 
-      - name: Upload complete FrameState video proof
+      - name: Upload complete FrameState video proof or failed attempt
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: axm-creative-render-framestate-video-proof
+          if-no-files-found: warn
           path: |
+            creative-render/build/framestate-donor-provenance.json
             creative-render/build/framestate-source/
             creative-render/build/framestate-project.json
             creative-render/build/framestate-project.receipt.json
             creative-render/build/framestate-inspect.json
             creative-render/build/framestate-ffmpeg-environment.txt
+            creative-render/build/framestate-render-output.json
+            creative-render/build/framestate-render-stderr.txt
+            creative-render/build/framestate-render-returncode.txt
+            creative-render/build/framestate-render-diagnostic.txt
             creative-render/build/framestate-render/
             creative-render/build/framestate-repeat.json
             creative-render/build/framestate-verify-render.json
